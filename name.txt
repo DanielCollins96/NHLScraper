@@ -1,0 +1,2 @@
+['Nicolas Deslauriers', '#20', 'LW', '6\' 3"', '219 lb', 'Age: 28', 'Anaheim Ducks']
+{'name': 'Nicolas Deslauriers', 'number': '#20', 'position': 'LW', 'height': '6\' 3"', 'weight': '219 lb', 'age': 'Age: 28', 'team': 'Anaheim Ducks'}
