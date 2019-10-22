@@ -45,17 +45,21 @@ for p in RosterLinks:
         #player = nameNum
 
         player['name'], player['num'] = nameNum[0], nameNum[1]
-
+        
+        attributes = []
         #Get the position, height, weight etc..
         for stats in soup.findAll('span', {'class':'player-jumbotron-vitals--attr'}):
-                #print(stats.contents[0])
-                player.append(stats.contents[0])
-        
+                #print(stats.contents[0]+'lol')
+                attributes.append((stats.contents[0]))
+        player['position'] = attributes[0]
+        player['height'] = attributes[1]
+        player['weight'] = attributes[2]
+        player['age'] = attributes[3].split(' ')[1]
         #Get the Picture src
         pic = soup.find_all('img', {'class':'player-jumbotron-vitals__headshot-image'}, {'src':re.compile('.jpg')})
         for image in pic:
                 #print(image['src'])
-                player.append(image['src'])
+                player['image'] = (image['src'])
 
         print(player)
         #playerDict = dict(name=player[0], number=player[1], position=player[2], height=player[3], weight=player[4], age=player[5], team=player[6], image=player[7])
@@ -63,5 +67,5 @@ for p in RosterLinks:
 
 j = json.dumps(rosters)
 with open('FlamesRecords.json', 'a+') as f:
-        f.write(j +',') 
+        f.write(j) 
         f.close()
