@@ -2,6 +2,7 @@ from bs4 import BeautifulSoup
 import requests
 import json
 import re
+from collections import *
  
 r = requests.get("https://www.nhl.com/ducks/roster/2019")
 
@@ -27,19 +28,23 @@ for p in TeamLinks:
                         #print(link)
                         RosterLinks.append("https://www.nhl.com" + link.get('href'))
 
+rosters = []
+
 for p in RosterLinks:
         req = requests.get(p)
 
         data = req.text
         soup = BeautifulSoup(data, "html.parser")
 
-        player = []
+        player = defaultdict(dict)
 
         #Get The Name
         nameNum = soup.find('h3', {'class': 'player-jumbotron-vitals__name-num'})
         nameNum = nameNum.contents[0]
         nameNum = nameNum.split(" | ")
-        player = nameNum
+        #player = nameNum
+
+        player['name'], player['num'] = nameNum[0], nameNum[1]
 
         #Get the position, height, weight etc..
         for stats in soup.findAll('span', {'class':'player-jumbotron-vitals--attr'}):
@@ -53,8 +58,10 @@ for p in RosterLinks:
                 player.append(image['src'])
 
         print(player)
-        playerDict = dict(name=player[0], number=player[1], position=player[2], height=player[3], weight=player[4], age=player[5], team=player[6], image=player[7])
-        j = json.dumps(playerDict)
-        with open('FlamesRecords.json', 'a+') as f:
-                f.write(j +',') 
-                f.close()
+        #playerDict = dict(name=player[0], number=player[1], position=player[2], height=player[3], weight=player[4], age=player[5], team=player[6], image=player[7])
+        rosters.append(player)
+
+j = json.dumps(rosters)
+with open('FlamesRecords.json', 'a+') as f:
+        f.write(j +',') 
+        f.close()
