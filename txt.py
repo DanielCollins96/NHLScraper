@@ -9,9 +9,13 @@ myFile=open('output.txt', 'w')
 CleanPlayers = []
 
 index = 0
+print(DirtyPlayers[index])
 
 # re.sub(-{1,})
 
+for p in DirtyPlayers:
+    Player = {}
+    l_name = re.search(r'[A-Z]+([a-z]+)', p)
 
     shtv = re.search(r'\$[^\]][0-9,]+', p)
     Player['Caphit'] = shtv.group()
