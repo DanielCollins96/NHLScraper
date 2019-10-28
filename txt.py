@@ -17,8 +17,8 @@ for p in DirtyPlayers:
     Player = {}
     l_name = re.search(r'[A-Z]+([a-z]+)', p)
 
-    shtv = re.search(r'\$[^\]][0-9,]+', p)
-    Player['Caphit'] = shtv.group()
+    dollaz = re.search(r'\$[^\]][0-9,]+', p)
+    Player['Caphit'] = dollaz.group()
     Player['LastName'] = l_name.group()
 
 
