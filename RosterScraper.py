@@ -33,7 +33,7 @@ for p in TeamLinks:
         r = requests.get(p)
         data = r.text
         soup = BeautifulSoup(data, "html.parser")
-        for player[:2] in soup.find_all('img', {'class': 'top-nav__club-logo-img'}, {'src':re.compile('.svg')}):
+        for player in soup.find_all('img', {'class': 'top-nav__club-logo-img'}, {'src':re.compile('.svg')}):
                 print(player['src'])
                 if  player.get('alt'):
                         print(player['alt'])
