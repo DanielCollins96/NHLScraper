@@ -29,7 +29,7 @@ tf.close()
 #                         #print(link)
 #                         RosterLinks.append("https://www.nhl.com" + link.get('href'))
 
-Logos = {}
+
 LogoList = []
 
 for p in TeamLinks:
@@ -37,10 +37,11 @@ for p in TeamLinks:
         data = r.text
         soup = BeautifulSoup(data, "html.parser")
         for player in soup.find_all('img', {'class': 'top-nav__club-logo-img'}, {'src':re.compile('.svg')}):
+                Logos = {}
                 Logos["team"] = soup.title.string.split('|')[1]
                 print(soup.title.string.split('|')[1])
-                Logos["logo"] = player["src"]
-                # print(player['src'])
+                print(player['src'])
+                Logos["logo"] = player['src']
                 LogoList.append(Logos)
 
 print(LogoList)
