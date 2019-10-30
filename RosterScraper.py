@@ -9,25 +9,52 @@ r = requests.get("https://www.nhl.com/ducks/roster/2019")
 data = r.text
 soup = BeautifulSoup(data, "html.parser")
 
-TeamLinks = []
-RosterLinks = []
+tf = open("./Team_Links.txt") 
+TeamLinks = tf.readlines() 
+tf.close()
 
 
-for page in soup.find_all('ul', attrs={'aria-labelledby': "teamSelect"}):
-    for li in page.findAll('li'):
-        for link in li.findAll('a', attrs={'href': re.compile("^/fla")}):
-                TeamLinks.append("https://www.nhl.com" + link.get('href'))
+# for page in soup.find_all('ul', attrs={'aria-labelledby': "teamSelect"}):
+#     for li in page.findAll('li'):
+#         for link in li.findAll('a', attrs={'href': re.compile("^/")}):
+#                 TeamLinks.append("https://www.nhl.com" + link.get('href'))
 
-for p in TeamLinks: 
-        #print(p)
+# for p in TeamLinks: 
+#         #print(p)
+#         r = requests.get(p)
+#         data = r.text
+#         soup = BeautifulSoup(data, "html.parser")
+#         for player in soup.find_all('td', attrs={'class': 'name-col'}):
+#                  for link in player.findAll('a', attrs={'href': re.compile("^/")}):
+#                         #print(link)
+#                         RosterLinks.append("https://www.nhl.com" + link.get('href'))
+
+for p in TeamLinks:
         r = requests.get(p)
         data = r.text
         soup = BeautifulSoup(data, "html.parser")
-        for player in soup.find_all('td', attrs={'class': 'name-col'}):
-                 for link in player.findAll('a', attrs={'href': re.compile("^/")}):
-                        #print(link)
-                        RosterLinks.append("https://www.nhl.com" + link.get('href'))
+        for player[:2] in soup.find_all('img', {'class': 'top-nav__club-logo-img'}, {'src':re.compile('.svg')}):
+                print(player['src'])
+                if  player.get('alt'):
+                        print(player['alt'])
 
+
+# teamfile = open("Team_Links.txt", 'w+')
+# for item in TeamLinks:
+#         teamfile.write(item +"\n")
+#         print(item)
+# teamfile.close()
+
+# rosterfile = open("Player_Links.txt", 'w+')
+# for item in RosterLinks:
+#         rosterfile.write(item +"\n")
+#         print(item)
+# rosterfile.close()
+
+rf = open("./Player_Links.txt")
+RosterLinks = rf.readlines()
+rf.close()
+# print(RosterLinks)
 rosters = []
 
 for p in RosterLinks:
@@ -55,17 +82,26 @@ for p in RosterLinks:
         player['height'] = attributes[1]
         player['weight'] = attributes[2]
         player['age'] = attributes[3].split(' ')[1]
-        #Get the Picture src
-        pic = soup.find_all('img', {'class':'player-jumbotron-vitals__headshot-image'}, {'src':re.compile('.jpg')})
-        for image in pic:
+        #Get the Player Picture src
+        player_pic = soup.find_all('img', {'class':'player-jumbotron-vitals__headshot-image'}, {'src':re.compile('.jpg')})
+        for image in player_pic:
                 #print(image['src'])
                 player['image'] = (image['src'])
 
-        print(player)
-        #playerDict = dict(name=player[0], number=player[1], position=player[2], height=player[3], weight=player[4], age=player[5], team=player[6], image=player[7])
+        team_pic = soup.find_all('span', {'class':'player-jumbotron-vitals__team-logo logo-bg-dark--team-24'})
+        
+        # for index in team_pic: 
+        #         print('gottem')
+
+
+        # print(player)
+
+        playerDict = dict(name=player[0], number=player[1], position=player[2], height=player[3], weight=player[4], age=player[5], team=player[6], image=player[7])
         rosters.append(player)
 
-j = json.dumps(rosters)
-with open('FlamesRecords.json', 'a+') as f:
-        f.write(j) 
-        f.close()
+# j = json.dumps(rosters)
+# with open('FlamesRecords.json', 'a+') as f:
+#         f.write(j) 
+#         f.close()
+
+# {team:'', logo: '', roster: ['']}
