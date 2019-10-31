@@ -85,7 +85,7 @@ for p in RosterLinks:
         #Get the Player Picture src
         player_pic = soup.find_all('img', {'class':'player-jumbotron-vitals__headshot-image'}, {'src':re.compile('.jpg')})
         for image in player_pic:
-                #print(image['src'])
+                print(image['src'])
                 player['image'] = (image['src'])
 
         team_pic = soup.find_all('span', {'class':'player-jumbotron-vitals__team-logo logo-bg-dark--team-24'})
