@@ -4,10 +4,10 @@ import json
 import re
 from collections import *
  
-r = requests.get("https://www.nhl.com/ducks/roster/2019")
+# r = requests.get("https://www.nhl.com/ducks/roster/2019")
 
-data = r.text
-soup = BeautifulSoup(data, "html.parser")
+# data = r.texts
+# soup = BeautifulSoup(data, "html.parser")
 
 tf = open("./Team_Links.txt") 
 TeamLinks = tf.readlines() 
@@ -42,9 +42,15 @@ for p in TeamLinks:
                 print(soup.title.string.split('|')[1])
                 print(player['src'])
                 Logos["logo"] = player['src']
-                LogoList.append(Logos)
+                # LogoList = json.dumps(Logos)
+                LogoList.append(json.dumps(Logos))
+                print(LogoList)
+
 
 print(LogoList)
+
+with open('data.txt', 'w') as outfile:
+    json.dump(LogoList, outfile)
 # teamfile = open("Team_Links.txt", 'w+')
 # for item in TeamLinks:
 #         teamfile.write(item +"\n")
