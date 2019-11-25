@@ -9,9 +9,11 @@ from collections import *
 # data = r.texts
 # soup = BeautifulSoup(data, "html.parser")
 
-tf = open("./Team_Links.txt") 
-TeamLinks = tf.readlines() 
-tf.close()
+# Open the Team Links to get name and logo link in json object it doesnt work right.
+
+# tf = open("./Team_Links.txt") 
+# TeamLinks = tf.readlines() 
+# tf.close()
 
 
 # for page in soup.find_all('ul', attrs={'aria-labelledby': "teamSelect"}):
@@ -30,75 +32,75 @@ tf.close()
 #                         RosterLinks.append("https://www.nhl.com" + link.get('href'))
 
 
-LogoList = []
+# LogoList = []
 
-for p in TeamLinks:
-        r = requests.get(p)
-        data = r.text
-        soup = BeautifulSoup(data, "html.parser")
-        for player in soup.find_all('img', {'class': 'top-nav__club-logo-img'}, {'src':re.compile('.svg')}):
-                Logos = {}
-                Logos["team"] = soup.title.string.split('|')[1]
-                print(soup.title.string.split('|')[1])
-                print(player['src'])
-                Logos["logo"] = player['src']
-                # LogoList = json.dumps(Logos)
-                LogoList.append(json.dumps(Logos))
-                print(LogoList)
+# for p in TeamLinks:
+#         r = requests.get(p)
+#         data = r.text
+#         soup = BeautifulSoup(data, "html.parser")
+#         for player in soup.find_all('img', {'class': 'top-nav__club-logo-img'}, {'src':re.compile('.svg')}):
+#                 Logos = {}
+#                 Logos["team"] = soup.title.string.split('|')[1]
+#                 print(soup.title.string.split('|')[1])
+#                 print(player['src'])
+#                 Logos["logo"] = player['src']
+#                 # LogoList = json.dumps(Logos)
+#                 LogoList.append(json.dumps(Logos))
+#                 print(LogoList)
 
 
-print(LogoList)
+# print(LogoList)
 
-with open('data.txt', 'w') as outfile:
-    json.dump(LogoList, outfile)
+# with open('data.txt', 'w') as outfile:
+#     json.dump(LogoList, outfile)
 # teamfile = open("Team_Links.txt", 'w+')
 # for item in TeamLinks:
 #         teamfile.write(item +"\n")
 #         print(item)
 # teamfile.close()
 
-# rosterfile = open("Player_Links.txt", 'w+')
-# for item in RosterLinks:
-#         rosterfile.write(item +"\n")
-#         print(item)
-# rosterfile.close()
+rosterfile = open("Player_Links.txt", 'w+')
+for item in RosterLinks:
+        rosterfile.write(item +"\n")
+        print(item)
+rosterfile.close()
 
-# rf = open("./Player_Links.txt")
-# RosterLinks = rf.readlines()
-# rf.close()
-# # print(RosterLinks)
-# rosters = []
+rf = open("./Player_Links.txt")
+RosterLinks = rf.readlines()
+rf.close()
+# print(RosterLinks)
+rosters = []
 
-# for p in RosterLinks:
-#         req = requests.get(p)
+for p in RosterLinks:
+        req = requests.get(p)
 
-#         data = req.text
-#         soup = BeautifulSoup(data, "html.parser")
+        data = req.text
+        soup = BeautifulSoup(data, "html.parser")
 
-#         player = defaultdict(dict)
+        player = defaultdict(dict)
 
-#         #Get The Name
-#         nameNum = soup.find('h3', {'class': 'player-jumbotron-vitals__name-num'})
-#         nameNum = nameNum.contents[0]
-#         nameNum = nameNum.split(" | ")
-#         #player = nameNum
+        #Get The Name
+        nameNum = soup.find('h3', {'class': 'player-jumbotron-vitals__name-num'})
+        nameNum = nameNum.contents[0]
+        nameNum = nameNum.split(" | ")
+        #player = nameNum
 
-#         player['name'], player['num'] = nameNum[0], nameNum[1]
+        player['name'], player['num'] = nameNum[0], nameNum[1]
         
-#         attributes = []
-#         #Get the position, height, weight etc..
-#         for stats in soup.findAll('span', {'class':'player-jumbotron-vitals--attr'}):
-#                 #print(stats.contents[0]+'lol')
-#                 attributes.append((stats.contents[0]))
-#         player['position'] = attributes[0]
-#         player['height'] = attributes[1]
-#         player['weight'] = attributes[2]
-#         player['age'] = attributes[3].split(' ')[1]
-#         #Get the Player Picture src
-#         player_pic = soup.find_all('img', {'class':'player-jumbotron-vitals__headshot-image'}, {'src':re.compile('.jpg')})
-#         for image in player_pic:
-#                 #print(image['src'])
-#                 player['image'] = (image['src'])
+        attributes = []
+        #Get the position, height, weight etc..
+        for stats in soup.findAll('span', {'class':'player-jumbotron-vitals--attr'}):
+                #print(stats.contents[0]+'lol')
+                attributes.append((stats.contents[0]))
+        player['position'] = attributes[0]
+        player['height'] = attributes[1]
+        player['weight'] = attributes[2]
+        player['age'] = attributes[3].split(' ')[1]
+        #Get the Player Picture src
+        player_pic = soup.find_all('img', {'class':'player-jumbotron-vitals__headshot-image'}, {'src':re.compile('.jpg')})
+        for image in player_pic:
+                #print(image['src'])
+                player['image'] = (image['src'])
 
 #         team_pic = soup.find_all('span', {'class':'player-jumbotron-vitals__team-logo logo-bg-dark--team-24'})
         
