@@ -43,9 +43,10 @@ for p in TeamLinks:
                 LogoList.append(Logos)
 print(LogoList)
 # logofile = open("./LogoFile.txt", "w+")
-logofile = open("./TeamLogos.json", 'r')
-logos = logofile.readlines()
-logofile.close()
+with open("./TeamLogos2.json", 'w') as outfile:
+        json.dump(LogoList, outfile) 
+# logos = logofile.readlines()
+# logofile.close()
 # print(logos)
 
 
