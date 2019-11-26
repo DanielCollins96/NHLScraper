@@ -1,0 +1,30 @@
+ Anaheim Ducks 
+https://nhl.bamcontent.com/images/assets/binary/299423002/binary-file/file.svg
+ Arizona Coyotes 
+https://nhl.bamcontent.com/images/assets/binary/309994320/binary-file/file.svg
+ Boston Bruins 
+https://nhl.bamcontent.com/images/assets/binary/301172494/binary-file/file.svg
+ Buffalo Sabres 
+https://nhl.bamcontent.com/images/assets/binary/307897682/binary-file/file.svg
+ Calgary Flames 
+//www-league.nhlstatic.com/nhl.com/builds/site-core/859472b87b7fa15f2f1331f5f72b3c722331138c_1572970812/images/logos/team/current/team-20-secondary-dark.svg
+ Carolina Hurricanes 
+https://nhl.bamcontent.com/images/assets/binary/311658886/binary-file/file.svg
+ Chicago Blackhawks 
+https://nhl.bamcontent.com/images/assets/binary/301971744/binary-file/file.svg
+ Colorado Avalanche 
+//www-league.nhlstatic.com/images/logos/teams-current-primary-dark/21.svg
+ Columbus Blue Jackets 
+https://nhl.bamcontent.com/images/assets/binary/311166440/binary-file/file.svg
+ Dallas Stars 
+https://nhl.bamcontent.com/images/assets/binary/310861272/binary-file/file.svg
+ Detroit Red Wings 
+https://nhl.bamcontent.com/images/assets/binary/310871332/binary-file/file.svg
+ Edmonton Oilers 
+https://nhl.bamcontent.com/images/assets/binary/290013862/binary-file/file.svg
+ Florida Panthers 
+https://nhl.bamcontent.com/images/assets/binary/291015530/binary-file/file.svg
+ Los Angeles Kings 
+https://nhl.bamcontent.com/images/assets/binary/308180580/binary-file/file.svg
+ Minnesota Wild 
+https://nhl.bamcontent.com/images/assets/binary/302317224/binary-file/file.svg
