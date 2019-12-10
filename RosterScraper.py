@@ -125,7 +125,7 @@ for p in RosterLinks[:5]:
         print('---------')
         # print(playerDict.items())
         # rosters.append(playerDict)
-        rosters.append(player
+        rosters.append(player)
         
 # playerDict = dict(name=player[0], number=player[1], position=player[2], height=player[3], weight=player[4], age=player[5], team=player[6], image=player[7])
 # print(rosters.itervalues())
