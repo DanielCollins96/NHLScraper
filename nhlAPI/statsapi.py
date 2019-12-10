@@ -3,6 +3,10 @@ import re
 import json
 from _collections import deque, defaultdict
 
+
+
+
+
 with open('./data/Teams.json') as f:
         d = json.load(f)
 ti = defaultdict(list)

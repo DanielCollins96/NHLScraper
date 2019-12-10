@@ -1,0 +1,121 @@
+{
+  "copyright" : "NHL and the NHL Shield are registered trademarks of the National Hockey League. NHL and NHL team marks are the property of the NHL and its teams. © NHL 2019. All Rights Reserved.",
+  "teams" : [ {
+    "id" : 1,
+    "name" : "New Jersey Devils",
+    "link" : "/api/v1/teams/1",
+    "venue" : {
+      "name" : "Prudential Center",
+      "link" : "/api/v1/venues/null",
+      "city" : "Newark",
+      "timeZone" : {
+        "id" : "America/New_York",
+        "offset" : -5,
+        "tz" : "EST"
+      }
+    },
+    "abbreviation" : "NJD",
+    "teamName" : "Devils",
+    "locationName" : "New Jersey",
+    "firstYearOfPlay" : "1982",
+    "division" : {
+      "id" : 18,
+      "name" : "Metropolitan",
+      "nameShort" : "Metro",
+      "link" : "/api/v1/divisions/18",
+      "abbreviation" : "M"
+    },
+    "conference" : {
+      "id" : 6,
+      "name" : "Eastern",
+      "link" : "/api/v1/conferences/6"
+    },
+    "franchise" : {
+      "franchiseId" : 23,
+      "teamName" : "Devils",
+      "link" : "/api/v1/franchises/23"
+    },
+    "teamStats" : [ {
+      "type" : {
+        "displayName" : "statsSingleSeason"
+      },
+      "splits" : [ {
+        "stat" : {
+          "gamesPlayed" : 29,
+          "wins" : 9,
+          "losses" : 15,
+          "ot" : 5,
+          "pts" : 23,
+          "ptPctg" : "39.7",
+          "goalsPerGame" : 2.517,
+          "goalsAgainstPerGame" : 3.621,
+          "evGGARatio" : 0.7027,
+          "powerPlayPercentage" : "14.0",
+          "powerPlayGoals" : 15.0,
+          "powerPlayGoalsAgainst" : 22.0,
+          "powerPlayOpportunities" : 107.0,
+          "penaltyKillPercentage" : "77.1",
+          "shotsPerGame" : 30.9655,
+          "shotsAllowed" : 30.7241,
+          "winScoreFirst" : 0.357,
+          "winOppScoreFirst" : 0.267,
+          "winLeadFirstPer" : 0.417,
+          "winLeadSecondPer" : 0.5,
+          "winOutshootOpp" : 0.25,
+          "winOutshotByOpp" : 0.353,
+          "faceOffsTaken" : 1724.0,
+          "faceOffsWon" : 819.0,
+          "faceOffsLost" : 905.0,
+          "faceOffWinPercentage" : "47.5",
+          "shootingPctg" : 8.1,
+          "savePctg" : 0.882
+        },
+        "team" : {
+          "id" : 1,
+          "name" : "New Jersey Devils",
+          "link" : "/api/v1/teams/1"
+        }
+      }, {
+        "stat" : {
+          "wins" : "30th",
+          "losses" : "28th",
+          "ot" : "11th",
+          "pts" : "30th",
+          "ptPctg" : "29th",
+          "goalsPerGame" : "29th",
+          "goalsAgainstPerGame" : "30th",
+          "evGGARatio" : "29th",
+          "powerPlayPercentage" : "28th",
+          "powerPlayGoals" : "23rd",
+          "powerPlayGoalsAgainst" : "25th",
+          "powerPlayOpportunities" : "3rd",
+          "penaltyKillOpportunities" : "16th",
+          "penaltyKillPercentage" : "23rd",
+          "shotsPerGame" : "20th",
+          "shotsAllowed" : "9th",
+          "winScoreFirst" : "30th",
+          "winOppScoreFirst" : "20th",
+          "winLeadFirstPer" : "31st",
+          "winLeadSecondPer" : "30th",
+          "winOutshootOpp" : "30th",
+          "winOutshotByOpp" : "30th",
+          "faceOffsTaken" : "22nd",
+          "faceOffsWon" : "26th",
+          "faceOffsLost" : "21st",
+          "faceOffWinPercentage" : "28th",
+          "savePctRank" : "29th",
+          "shootingPctRank" : "28th"
+        },
+        "team" : {
+          "id" : 1,
+          "name" : "New Jersey Devils",
+          "link" : "/api/v1/teams/1"
+        }
+      } ]
+    } ],
+    "shortName" : "New Jersey",
+    "officialSiteUrl" : "http://www.newjerseydevils.com/",
+    "franchiseId" : 23,
+    "active" : true
+  } ]
+}
