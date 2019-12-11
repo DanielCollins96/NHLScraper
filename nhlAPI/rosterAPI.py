@@ -18,8 +18,8 @@ baseURL = 'https://statsapi.web.nhl.com/api/v1/'
 #     print(response.text)
 # for line in open('./cleanTeams.json', 'r'):
 #     print(line)
-xxx = 0
-######### 
+
+
 with open('./cleanTeams.json') as f:
     d = json.load(f)
 
