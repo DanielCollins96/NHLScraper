@@ -2,9 +2,13 @@ import requests
 import re
 import json
 from _collections import deque, defaultdict
+from datetime import date
+
+today = date.today()
+
+baseURL = 'https://statsapi.web.nhl.com/api/v1/'
 
 rosters = {}
-baseURL = 'https://statsapi.web.nhl.com/api/v1/'
 
 # with open('./writeTeam.json') as f:
 #         d = json.load(f)
@@ -20,7 +24,7 @@ baseURL = 'https://statsapi.web.nhl.com/api/v1/'
 #     print(line)
 
 
-with open('./cleanTeams.json') as f:
+with open('./data/cleanTeams.json') as f:
     d = json.load(f)
 
     for t in d["teams"]:
@@ -30,21 +34,16 @@ with open('./cleanTeams.json') as f:
         r = response.json()
 
         t["stat"] = r["teams"][0]["teamStats"][0]["splits"][0]["stat"]
-        # for t in r["teams"]:
-        #     # print(t["id"])
-        #     id = t["id"]
-        #     if id == t["id"]
-        #     for ts in t["teamStats"]:
-        #         for s in ts["splits"]:
-        #         d["teams"][x]["splits"] = ts["splits"][0]
-        #             for x in range(len(d["teams"])):
-        #                 if d["teams"][x]["id"] == xxx:
-        #                     # print(d["teams"][x])
-        #                     print((list(s["stat"].keys())[0]))
-        #                     d["teams"][x]["splits"] = r["teams"][x]["teamStats"][0]["splits"][0]["stat"]
 
-with open('cleanteeems.json', 'w') as jfile:
+
+d["date"] = today.isoformat()
+print(today.isoformat())
+with open('cleanteeems2.json', 'w') as jfile:
     json.dump(d, jfile)
+    
+firebase_data = open('cleanteeems2.json')
+response = requests.put('https://hockeydata-e277a.firebaseio.com/teamstats/{dt_time}.json'.format(dt_time=d["date"]), data=firebase_data)
+
 
 #r["teams"]["teamStats"][0]["splits"][0]
 # https://statsapi.web.nhl.com/api/v1/teams/1/?expand=team.stats 
@@ -52,6 +51,11 @@ with open('cleanteeems.json', 'w') as jfile:
 
 
 # https://statsapi.web.nhl.com/api/v1/people/8474056
+
+
+
+# curl -X PUT -d @cleanLogos.json \
+#   'https://hockeydata-e277a.firebaseio.com/teamstats/1.json'
 
 
 
