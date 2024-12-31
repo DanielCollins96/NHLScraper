@@ -40,7 +40,14 @@ class NHLScraper:
             response.raise_for_status()
             data = response.json()
             
-            # Process skaters
+            return data_to_skaters_and_goalies_df(data, game_type,season,tricode)
+        
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Error fetching stats for {tricode} game type {game_type}: {e}")
+            return pd.DataFrame(), pd.DataFrame()
+
+    
+    def data_to_skaters_and_goalies_df(self, data, game_type, season, tricode):
             skaters_df = pd.DataFrame(data.get('skaters', []))
             if not skaters_df.empty:
                 skaters_df['firstName'] = skaters_df['firstName'].apply(lambda x: x.get('default', ''))
@@ -59,9 +66,7 @@ class NHLScraper:
                 goalies_df['team'] = tricode
             
             return skaters_df, goalies_df
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Error fetching stats for {tricode} game type {game_type}: {e}")
-            return pd.DataFrame(), pd.DataFrame()
+    
 
     def scrape_current_season(self) -> Dict[str, pd.DataFrame]:
         """Scrape current season data for all game types"""
@@ -130,34 +135,36 @@ class NHLScraper:
         data = response.json()
         return data
 
-    def scrape_all_seasons(self, tricode: str, active_only: bool = False):
+    def scrape_all_seasons_by_gametype(self, active_only: bool = True):
         """
         Scrape all team data, including gametypes and seasons.
         Optionally restrict to active teams only.
         """
         all_data = []
         teams = self.scrape_all_teams()
+        if active_only:
+            teams = [team for team in teams if team["triCode"] in self.active_team_codes]
 
-        for team in teams:
+        for team in teams[:5]:
             tricode = team.get("triCode")
-            is_active = "active" in team.get("fullName", "").lower()
-
-            if active_only and not is_active:
-                continue
 
             try:
                 gametypes_data = self.scrape_team_gametypes(tricode)
-                for game_data in gametypes_data:
-                    game_data["teamName"] = team.get("fullName")
-                    game_data["triCode"] = tricode
-                    all_data.append(game_data)
+                for entry in gametypes_data:
+                    season = entry['season']
+                    for game_type in entry['gameTypes']: 
+                        url = f"{self.web_api_url}/club-stats/{tricode}/{season}/{game_type}"
+                        print(url)
+                        all_data.append(url)
+
                 print(f"Scraped data for team {tricode}")
             except requests.exceptions.RequestException as e:
                 self.logger.error(f"Error fetching data for team {tricode}: {e}")
                 continue
 
         # Convert to a pandas DataFrame
-        return pd.DataFrame(all_data)
+        # return pd.DataFrame(all_data)
+        return all_data
         
 
 def main():
