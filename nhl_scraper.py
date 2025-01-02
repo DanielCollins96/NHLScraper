@@ -11,7 +11,7 @@ class NHLScraper:
         self.web_api_url = "https://api-web.nhle.com/v1"
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
-        
+
         self.active_team_codes = [
             'ANA', 'UTA', 'BOS', 'BUF', 'CGY', 'CAR', 'CHI', 'COL', 
             'CBJ', 'DAL', 'DET', 'EDM', 'FLA', 'LAK', 'MIN', 'MTL', 
@@ -31,6 +31,30 @@ class NHLScraper:
             season = f"{current_year - 1}{current_year}"
         return season
 
+    
+    def data_to_skaters_and_goalies_df(self, data, game_type, season, tricode) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Processes a Dict[str, DF] skater/player dict (output from `scrape_current_season` etc.) into skaters and goalies DataFrames
+
+        """
+        skaters_df = pd.DataFrame(data.get('skaters', []))
+        if not skaters_df.empty:
+            skaters_df['firstName'] = skaters_df['firstName'].apply(lambda x: x.get('default', ''))
+            skaters_df['lastName'] = skaters_df['lastName'].apply(lambda x: x.get('default', ''))
+            skaters_df['gameType'] = game_type
+            skaters_df['season'] = season
+            skaters_df['team'] = tricode
+        
+        # Process goalies
+        goalies_df = pd.DataFrame(data.get('goalies', []))
+        if not goalies_df.empty:
+            goalies_df['firstName'] = goalies_df['firstName'].apply(lambda x: x.get('default', ''))
+            goalies_df['lastName'] = goalies_df['lastName'].apply(lambda x: x.get('default', ''))
+            goalies_df['gameType'] = game_type
+            goalies_df['season'] = season
+            goalies_df['team'] = tricode
+        
+        return skaters_df, goalies_df
+    
     def get_team_current_stats(self, tricode: str, game_type: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Get current season statistics for a specific team and game type"""
         try:
@@ -39,37 +63,19 @@ class NHLScraper:
             response = requests.get(url)
             response.raise_for_status()
             data = response.json()
-            
-            return data_to_skaters_and_goalies_df(data, game_type,season,tricode)
+            self.logger.info(f"Retrieved current stats for {tricode}")
+
+            return self.data_to_skaters_and_goalies_df(data, game_type,season,tricode)
         
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Error fetching stats for {tricode} game type {game_type}: {e}")
             return pd.DataFrame(), pd.DataFrame()
 
-    
-    def data_to_skaters_and_goalies_df(self, data, game_type, season, tricode):
-            skaters_df = pd.DataFrame(data.get('skaters', []))
-            if not skaters_df.empty:
-                skaters_df['firstName'] = skaters_df['firstName'].apply(lambda x: x.get('default', ''))
-                skaters_df['lastName'] = skaters_df['lastName'].apply(lambda x: x.get('default', ''))
-                skaters_df['gameType'] = game_type
-                skaters_df['season'] = season
-                skaters_df['team'] = tricode
-            
-            # Process goalies
-            goalies_df = pd.DataFrame(data.get('goalies', []))
-            if not goalies_df.empty:
-                goalies_df['firstName'] = goalies_df['firstName'].apply(lambda x: x.get('default', ''))
-                goalies_df['lastName'] = goalies_df['lastName'].apply(lambda x: x.get('default', ''))
-                goalies_df['gameType'] = game_type
-                goalies_df['season'] = season
-                goalies_df['team'] = tricode
-            
-            return skaters_df, goalies_df
-    
 
     def scrape_current_season(self) -> Dict[str, pd.DataFrame]:
-        """Scrape current season data for all game types"""
+        """Scrape current season data for all game types
+        return Dict has keys 'teams', 'skaters', 'goalies' with corresponding DataFrames
+        """
         all_skaters = []
         all_goalies = []
         processed_teams = []
@@ -116,7 +122,7 @@ class NHLScraper:
         
         return current_season_data
     
-    def scrape_all_teams(self) -> List[Dict]:
+    def get_all_teams(self) -> pd.DataFrame:
         """
         Fetch all teams and their details using the /team endpoint.
         Returns a list of team dictionaries.
@@ -125,7 +131,7 @@ class NHLScraper:
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
-        return data.get("data", [])
+        return pd.DataFrame(data.get("data", []))
     
     def scrape_team_gametypes(self, tricode: str):
         """Scrape all gametypes (Seasons Reg/PO) for a team(tricode)"""
@@ -141,12 +147,11 @@ class NHLScraper:
         Optionally restrict to active teams only.
         """
         all_data = []
-        teams = self.scrape_all_teams()
+        teams = self.get_all_teams()['triCode'].tolist()
         if active_only:
-            teams = [team for team in teams if team["triCode"] in self.active_team_codes]
+            teams = [team for team in teams if team in self.active_team_codes]
 
-        for team in teams[:5]:
-            tricode = team.get("triCode")
+        for tricode in teams[:5]:
 
             try:
                 gametypes_data = self.scrape_team_gametypes(tricode)
