@@ -34,7 +34,6 @@ class NHLScraper:
     
     def data_to_skaters_and_goalies_df(self, data, game_type, season, tricode) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Processes a Dict[str, DF] skater/player dict (output from `scrape_current_season` etc.) into skaters and goalies DataFrames
-
         """
         skaters_df = pd.DataFrame(data.get('skaters', []))
         if not skaters_df.empty:
@@ -170,6 +169,16 @@ class NHLScraper:
         # Convert to a pandas DataFrame
         # return pd.DataFrame(all_data)
         return all_data
+    
+    def scrape_player_season_totals(self, player_id: str) -> pd.DataFrame:
+        url = f"{self.web_api_url}/player/{player_id}/landing"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        return data 
+        player_df = pd.DataFrame(data)
+        return player_df
+
         
 
 def main():
