@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 from time import sleep
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Union, Optional
 import logging
 from datetime import datetime
 
@@ -22,7 +22,7 @@ class NHLScraper:
         self.game_types = [2, 3]  # 2 for regular season, 3 for playoffs
 
     def get_current_season(self) -> str:
-        """Calculate the current NHL season string"""
+        """Calculate the current NHL season string (October start date)"""
         current_date = datetime.now()
         current_year = current_date.year
         if current_date.month >= 10:
@@ -31,28 +31,6 @@ class NHLScraper:
             season = f"{current_year - 1}{current_year}"
         return season
 
-    
-    def data_to_skaters_and_goalies_df(self, data, game_type, season, tricode) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Processes a Dict[str, DF] skater/player dict (output from `scrape_current_season` etc.) into skaters and goalies DataFrames
-        """
-        skaters_df = pd.DataFrame(data.get('skaters', []))
-        if not skaters_df.empty:
-            skaters_df['firstName'] = skaters_df['firstName'].apply(lambda x: x.get('default', ''))
-            skaters_df['lastName'] = skaters_df['lastName'].apply(lambda x: x.get('default', ''))
-            skaters_df['gameType'] = game_type
-            skaters_df['season'] = season
-            skaters_df['team'] = tricode
-        
-        # Process goalies
-        goalies_df = pd.DataFrame(data.get('goalies', []))
-        if not goalies_df.empty:
-            goalies_df['firstName'] = goalies_df['firstName'].apply(lambda x: x.get('default', ''))
-            goalies_df['lastName'] = goalies_df['lastName'].apply(lambda x: x.get('default', ''))
-            goalies_df['gameType'] = game_type
-            goalies_df['season'] = season
-            goalies_df['team'] = tricode
-        
-        return skaters_df, goalies_df
     
     def get_team_current_stats(self, tricode: str, game_type: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Get current season statistics for a specific team and game type"""
@@ -64,14 +42,14 @@ class NHLScraper:
             data = response.json()
             self.logger.info(f"Retrieved current stats for {tricode}")
 
-            return self.data_to_skaters_and_goalies_df(data, game_type,season,tricode)
+            return self._data_to_skaters_and_goalies_df(data, game_type,season,tricode)
         
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Error fetching stats for {tricode} game type {game_type}: {e}")
             return pd.DataFrame(), pd.DataFrame()
 
 
-    def scrape_current_season(self) -> Dict[str, pd.DataFrame]:
+    def scrape_current_season(self, team_codes: Optional[Union[str, List[str]]] = None) -> Dict[str, pd.DataFrame]:
         """Scrape current season data for all game types
         return Dict has keys 'teams', 'skaters', 'goalies' with corresponding DataFrames
         """
@@ -79,7 +57,20 @@ class NHLScraper:
         all_goalies = []
         processed_teams = []
         
-        for team in self.active_team_codes:
+            # Handle single team code input
+        if isinstance(team_codes, str):
+            team_codes = [team_codes]
+        
+        # Use provided team codes or fall back to all active teams
+        teams_to_scrape = team_codes if team_codes is not None else self.active_team_codes
+    
+        # Validate team codes if provided
+        if team_codes is not None:
+            invalid_teams = [team for team in teams_to_scrape if team not in self.active_team_codes]
+            if invalid_teams:
+                raise ValueError(f"Invalid team code(s): {invalid_teams}")
+        
+        for team in teams_to_scrape:
             team_has_data = False
             
             for game_type in self.game_types:
@@ -178,7 +169,28 @@ class NHLScraper:
         return data 
         player_df = pd.DataFrame(data)
         return player_df
-
+    
+    def _data_to_skaters_and_goalies_df(self, data, game_type, season, tricode) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Processes a Dict[str, DF] skater/player dict (output from `scrape_current_season` etc.) into skaters and goalies DataFrames
+        """
+        skaters_df = pd.DataFrame(data.get('skaters', []))
+        if not skaters_df.empty:
+            skaters_df['firstName'] = skaters_df['firstName'].apply(lambda x: x.get('default', ''))
+            skaters_df['lastName'] = skaters_df['lastName'].apply(lambda x: x.get('default', ''))
+            skaters_df['gameType'] = game_type
+            skaters_df['season'] = season
+            skaters_df['team'] = tricode
+        
+        # Process goalies
+        goalies_df = pd.DataFrame(data.get('goalies', []))
+        if not goalies_df.empty:
+            goalies_df['firstName'] = goalies_df['firstName'].apply(lambda x: x.get('default', ''))
+            goalies_df['lastName'] = goalies_df['lastName'].apply(lambda x: x.get('default', ''))
+            goalies_df['gameType'] = game_type
+            goalies_df['season'] = season
+            goalies_df['team'] = tricode
+        
+        return skaters_df, goalies_df
         
 
 def main():
