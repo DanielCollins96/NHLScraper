@@ -4,6 +4,8 @@ from time import sleep
 from typing import List, Dict, Any, Tuple, Union, Optional
 import logging
 from datetime import datetime
+import aiohttp
+import asyncio
 
 class NHLScraper:
     def __init__(self):
@@ -31,6 +33,17 @@ class NHLScraper:
             season = f"{current_year - 1}{current_year}"
         return season
 
+    def get_all_teams(self) -> pd.DataFrame:
+        """
+        Fetch all teams and their details using the /team endpoint.
+        Returns a list of team dictionaries.
+        """
+        url = f"{self.base_url}/team"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        return pd.DataFrame(data.get("data", []))
+    
     
     def get_team_current_stats(self, tricode: str, game_type: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Get current season statistics for a specific team and game type"""
@@ -112,17 +125,6 @@ class NHLScraper:
         
         return current_season_data
     
-    def get_all_teams(self) -> pd.DataFrame:
-        """
-        Fetch all teams and their details using the /team endpoint.
-        Returns a list of team dictionaries.
-        """
-        url = f"{self.base_url}/team"
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        return pd.DataFrame(data.get("data", []))
-    
     def scrape_team_gametypes(self, tricode: str):
         """Scrape all gametypes (Seasons Reg/PO) for a team(tricode)"""
         url = f"{self.web_api_url}/club-stats-season/{tricode}"
@@ -130,36 +132,86 @@ class NHLScraper:
         response.raise_for_status()
         data = response.json()
         return data
-
-    def scrape_all_seasons_by_gametype(self, active_only: bool = True):
-        """
-        Scrape all team data, including gametypes and seasons.
-        Optionally restrict to active teams only.
-        """
-        all_data = []
+    
+    async def async_scrape_all_seasons(self, active_only: bool = True):
+        """Async version of scrape_all_seasons_by_gametype."""
+        # Gather URLs first
+        all_urls = []
         teams = self.get_all_teams()['triCode'].tolist()
         if active_only:
             teams = [team for team in teams if team in self.active_team_codes]
 
-        for tricode in teams[:5]:
-
+        for tricode in teams:
             try:
                 gametypes_data = self.scrape_team_gametypes(tricode)
                 for entry in gametypes_data:
                     season = entry['season']
                     for game_type in entry['gameTypes']: 
                         url = f"{self.web_api_url}/club-stats/{tricode}/{season}/{game_type}"
-                        print(url)
-                        all_data.append(url)
-
-                print(f"Scraped data for team {tricode}")
-            except requests.exceptions.RequestException as e:
-                self.logger.error(f"Error fetching data for team {tricode}: {e}")
+                        all_urls.append(url)
+                self.logger.info(f"Gathered URLs for team {tricode}")
+            except Exception as e:
+                self.logger.error(f"Error gathering URLs for team {tricode}: {e}")
                 continue
 
-        # Convert to a pandas DataFrame
-        # return pd.DataFrame(all_data)
-        return all_data
+        # Fetch all data asynchronously
+        responses = await self._fetch_all_data(all_urls)
+        
+        # Filter out None responses
+        return [r for r in responses if r is not None]
+
+    def scrape_all_seasons_by_gametype(self, active_only: bool = True):
+        """
+        Scrape all team data, including gametypes and seasons.
+        Optionally restrict to active teams only.
+        """
+        try:
+            # Get the current event loop if it exists
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # If no loop is running, create and run a new one
+            return asyncio.run(self.async_scrape_all_seasons(active_only))
+        else:
+            # Return coroutine directly to allow 'await'
+            return self.async_scrape_all_seasons(active_only)
+        
+    async def process_all_teams(scraper):
+        """
+        Processes all team data from `scraper.scrape_all_seasons_by_gametype()` 
+        and merges all skater and goalie DataFrames.
+        
+        Args:
+            scraper: Instance of the scraper class.
+
+        Returns:
+            Tuple[pd.DataFrame, pd.DataFrame]: Combined Skaters and Goalies DataFrames.
+        """
+        # Step 1: Fetch all team data
+        data = await scraper.scrape_all_seasons_by_gametype()
+
+        # Step 2: Initialize empty lists for skater and goalie DataFrames
+        all_skaters = []
+        all_goalies = []
+
+        # Step 3: Process each team's data
+        for team_data in data:  # Assuming `data` is a list of team dictionaries
+            team_skater_df, team_goalie_df = scraper._data_to_skaters_and_goalies_df(
+                team_data,
+                game_type=team_data.get("gameType"),  # Optional fields if present
+                season=team_data.get("season"),
+                tricode=team_data.get("teamTricode"),
+            )
+            if not team_skater_df.empty:
+                all_skaters.append(team_skater_df)
+            if not team_goalie_df.empty:
+                all_goalies.append(team_goalie_df)
+
+        # Step 4: Concatenate all skater and goalie DataFrames
+        combined_skaters_df = pd.concat(all_skaters, ignore_index=True) if all_skaters else pd.DataFrame()
+        combined_goalies_df = pd.concat(all_goalies, ignore_index=True) if all_goalies else pd.DataFrame()
+
+        return combined_skaters_df, combined_goalies_df
+
     
     def scrape_player_season_totals(self, player_id: str) -> pd.DataFrame:
         url = f"{self.web_api_url}/player/{player_id}/landing"
@@ -170,27 +222,52 @@ class NHLScraper:
         player_df = pd.DataFrame(data)
         return player_df
     
-    def _data_to_skaters_and_goalies_df(self, data, game_type, season, tricode) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def _data_to_skaters_and_goalies_df(self, data, game_type=None, season=None, tricode=None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Processes a Dict[str, DF] skater/player dict (output from `scrape_current_season` etc.) into skaters and goalies DataFrames
         """
         skaters_df = pd.DataFrame(data.get('skaters', []))
         if not skaters_df.empty:
             skaters_df['firstName'] = skaters_df['firstName'].apply(lambda x: x.get('default', ''))
             skaters_df['lastName'] = skaters_df['lastName'].apply(lambda x: x.get('default', ''))
-            skaters_df['gameType'] = game_type
-            skaters_df['season'] = season
-            skaters_df['team'] = tricode
+            if game_type:
+                skaters_df['gameType'] = game_type
+            if season:
+                skaters_df['season'] = season
+            if tricode:
+                skaters_df['team'] = tricode
         
         # Process goalies
         goalies_df = pd.DataFrame(data.get('goalies', []))
         if not goalies_df.empty:
             goalies_df['firstName'] = goalies_df['firstName'].apply(lambda x: x.get('default', ''))
             goalies_df['lastName'] = goalies_df['lastName'].apply(lambda x: x.get('default', ''))
-            goalies_df['gameType'] = game_type
-            goalies_df['season'] = season
-            goalies_df['team'] = tricode
+            if game_type:
+                goalies_df['gameType'] = game_type
+            if season:
+                goalies_df['season'] = season
+            if tricode:
+                goalies_df['team'] = tricode
         
         return skaters_df, goalies_df
+    
+    async def fetch_data(self, session, url):
+        """Fetch data from a single URL."""
+        try:
+            async with session.get(url) as res:
+                if res.status == 200:
+                    return await res.json()
+                else:
+                    self.logger.error(f"Error {res.status} for URL: {url}")
+                    return None
+        except Exception as e:
+            self.logger.error(f"Error fetching {url}: {e}")
+            return None
+    
+    async def _fetch_all_data(self, urls: List[str], batch_size: int = 10) -> List[dict]:
+        """Fetch data from multiple URLs concurrently."""
+        async with aiohttp.ClientSession() as session:
+            tasks = [self.fetch_data(session, url) for url in urls]
+            return await asyncio.gather(*tasks)
         
 
 def main():
