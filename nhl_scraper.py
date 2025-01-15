@@ -175,7 +175,7 @@ class NHLScraper:
             # Return coroutine directly to allow 'await'
             return self.async_scrape_all_seasons(active_only)
         
-    async def process_all_teams(scraper):
+    async def process_all_teams(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Processes all team data from `scraper.scrape_all_seasons_by_gametype()` 
         and merges all skater and goalie DataFrames.
@@ -187,7 +187,7 @@ class NHLScraper:
             Tuple[pd.DataFrame, pd.DataFrame]: Combined Skaters and Goalies DataFrames.
         """
         # Step 1: Fetch all team data
-        data = await scraper.scrape_all_seasons_by_gametype()
+        data = await self.scrape_all_seasons_by_gametype()
 
         # Step 2: Initialize empty lists for skater and goalie DataFrames
         all_skaters = []
@@ -195,7 +195,7 @@ class NHLScraper:
 
         # Step 3: Process each team's data
         for team_data in data:  # Assuming `data` is a list of team dictionaries
-            team_skater_df, team_goalie_df = scraper._data_to_skaters_and_goalies_df(
+            team_skater_df, team_goalie_df = self._data_to_skaters_and_goalies_df(
                 team_data,
                 game_type=team_data.get("gameType"),  # Optional fields if present
                 season=team_data.get("season"),
@@ -250,7 +250,7 @@ class NHLScraper:
         
         return skaters_df, goalies_df
     
-    async def fetch_data(self, session, url):
+    async def _fetch_data(self, session, url):
         """Fetch data from a single URL."""
         try:
             async with session.get(url) as res:
@@ -266,7 +266,7 @@ class NHLScraper:
     async def _fetch_all_data(self, urls: List[str], batch_size: int = 10) -> List[dict]:
         """Fetch data from multiple URLs concurrently."""
         async with aiohttp.ClientSession() as session:
-            tasks = [self.fetch_data(session, url) for url in urls]
+            tasks = [self._fetch_data(session, url) for url in urls]
             return await asyncio.gather(*tasks)
         
 
