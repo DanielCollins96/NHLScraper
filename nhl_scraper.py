@@ -102,7 +102,7 @@ class NHLScraper:
                             goalies_df['team'] = team
                             all_goalies.append(goalies_df)
                     
-                    sleep(.1)  # Rate limiting
+                    sleep(.02)  # Rate limiting
                 except Exception as e:
                     self.logger.error(f"Error processing team {team} game type {game_type}: {e}")
                     continue
@@ -213,14 +213,33 @@ class NHLScraper:
         return combined_skaters_df, combined_goalies_df
 
     
-    def scrape_player_season_totals(self, player_id: str) -> pd.DataFrame:
+    def scrape_player(self, player_id: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         url = f"{self.web_api_url}/player/{player_id}/landing"
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
-        return data 
-        player_df = pd.DataFrame(data)
-        return player_df
+        player_df = pd.json_normalize(data)
+        seasons_df = pd.json_normalize(player_df['seasonTotals'][0])
+        player_id = player_df['playerId'].iloc[0]
+        seasons_df.insert(0, 'playerId', player_id)
+
+        awards_table = pd.json_normalize(player_df['awards'][0])
+        award_rows = []
+        for _, row in awards_table.iterrows():
+            seasons_data = row['seasons']
+            # seasons_data = ast.literal_eval(row['seasons'])
+            print(seasons_data)
+            for season in seasons_data:
+                expanded_row = {
+                    'playerId': player_id,
+                    'trophy_default': row['trophy.default'],
+                    'trophy_fr': row['trophy.fr'],
+                    **season  # Unpack all season statistics
+                }
+                award_rows.append(expanded_row)
+
+            awards_df = pd.DataFrame(award_rows)
+        return player_df, seasons_df, awards_df
     
     def _data_to_skaters_and_goalies_df(self, data, game_type=None, season=None, tricode=None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Processes a Dict[str, DF] skater/player dict (output from `scrape_current_season` etc.) into skaters and goalies DataFrames
