@@ -218,28 +218,38 @@ class NHLScraper:
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
+
         player_df = pd.json_normalize(data)
-        seasons_df = pd.json_normalize(player_df['seasonTotals'][0])
-        player_id = player_df['playerId'].iloc[0]
-        seasons_df.insert(0, 'playerId', player_id)
+        # Process seasons data
+        seasons_df = self._process_seasons(player_df, player_id)
+        # Process awards data
+        awards_df = self._process_awards(player_df, player_id)
 
-        awards_table = pd.json_normalize(player_df['awards'][0])
-        award_rows = []
-        for _, row in awards_table.iterrows():
-            seasons_data = row['seasons']
-            # seasons_data = ast.literal_eval(row['seasons'])
-            print(seasons_data)
-            for season in seasons_data:
-                expanded_row = {
-                    'playerId': player_id,
-                    'trophy_default': row['trophy.default'],
-                    'trophy_fr': row['trophy.fr'],
-                    **season  # Unpack all season statistics
-                }
-                award_rows.append(expanded_row)
-
-            awards_df = pd.DataFrame(award_rows)
         return player_df, seasons_df, awards_df
+    
+    def _process_seasons(self, player_df: pd.DataFrame, player_id: str) -> pd.DataFrame:
+        """Processes season totals data."""
+        seasons_df = pd.json_normalize(player_df['seasonTotals'].iloc[0])
+        seasons_df.insert(0, 'playerId', player_id)
+        return seasons_df
+
+    def _process_awards(self, player_df: pd.DataFrame, player_id: str) -> pd.DataFrame:
+        """Processes and expands awards data."""
+        awards_table = pd.json_normalize(player_df['awards'].iloc[0])
+        
+        # Use list comprehension for better performance
+        award_rows = [
+            {
+                'playerId': player_id,
+                'trophy_default': row['trophy.default'],
+                'trophy_fr': row['trophy.fr'],
+                **season
+            }
+            for _, row in awards_table.iterrows()
+            for season in row['seasons']
+        ]
+        
+        return pd.DataFrame(award_rows)
     
     def _data_to_skaters_and_goalies_df(self, data, game_type=None, season=None, tricode=None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Processes a Dict[str, DF] skater/player dict (output from `scrape_current_season` etc.) into skaters and goalies DataFrames
