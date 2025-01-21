@@ -62,13 +62,14 @@ class NHLScraper:
             return pd.DataFrame(), pd.DataFrame()
 
 
-    def scrape_current_season(self, team_codes: Optional[Union[str, List[str]]] = None) -> Dict[str, pd.DataFrame]:
+    async def scrape_current_season_async(self, team_codes: Optional[Union[str, List[str]]] = None) -> Dict[str, pd.DataFrame]:
         """Scrape current season data for all game types
         return Dict has keys 'teams', 'skaters', 'goalies' with corresponding DataFrames
         """
+        season = self.get_current_season()
         all_skaters = []
         all_goalies = []
-        processed_teams = []
+        processed_teams = set()
         
             # Handle single team code input
         if isinstance(team_codes, str):
@@ -82,33 +83,42 @@ class NHLScraper:
             invalid_teams = [team for team in teams_to_scrape if team not in self.active_team_codes]
             if invalid_teams:
                 raise ValueError(f"Invalid team code(s): {invalid_teams}")
-        
-        for team in teams_to_scrape:
+    
+        urls = [
+            f"{self.web_api_url}/club-stats/{tricode}/{season}/{game_type}"
+            for tricode in teams_to_scrape
+            for game_type in self.game_types
+        ]  
+        responses = await self._fetch_all_data(urls)
+
+        # Process responses in chunks corresponding to game types
+        chunk_size = len(self.game_types)
+        for i in range(0, len(responses), chunk_size):
+            team_responses = responses[i:i + chunk_size]
+            team_idx = i // chunk_size
+            team = teams_to_scrape[team_idx]
+            
             team_has_data = False
             
-            for game_type in self.game_types:
-                try:
-                    skaters_df, goalies_df = self.get_team_current_stats(team, game_type)
+            for resp_idx, response in enumerate(team_responses):
+                if response is not None:
+                    game_type = self.game_types[resp_idx]
+                    skaters_df, goalies_df = self._data_to_skaters_and_goalies_df(
+                        response,
+                        game_type=game_type,
+                        tricode=team
+                    )
                     
                     if not skaters_df.empty or not goalies_df.empty:
                         team_has_data = True
                         
-                        # Add team information
                         if not skaters_df.empty:
-                            skaters_df['team'] = team
                             all_skaters.append(skaters_df)
-                        
                         if not goalies_df.empty:
-                            goalies_df['team'] = team
                             all_goalies.append(goalies_df)
-                    
-                    sleep(.02)  # Rate limiting
-                except Exception as e:
-                    self.logger.error(f"Error processing team {team} game type {game_type}: {e}")
-                    continue
             
             if team_has_data:
-                processed_teams.append({'triCode': team})
+                processed_teams.add(team)
         
         # Create final dataframes
         current_season_data = {
@@ -125,6 +135,14 @@ class NHLScraper:
         
         return current_season_data
     
+    async def scrape_current_season(
+        self, 
+        team_codes: Optional[Union[str, List[str]]] = None
+    ) -> Dict[str, pd.DataFrame]:
+        """Synchronous wrapper for the async scraper"""
+        loop = asyncio.get_event_loop()
+        return await self.scrape_current_season_async(team_codes)
+
     def scrape_team_gametypes(self, tricode: str):
         """Scrape all gametypes (Seasons Reg/PO) for a team(tricode)"""
         url = f"{self.web_api_url}/club-stats-season/{tricode}"
@@ -220,14 +238,14 @@ class NHLScraper:
         data = response.json()
 
         player_df = pd.json_normalize(data)
-        # Process seasons data
-        seasons_df = self._process_seasons(player_df, player_id)
+        # Process seasonTotals data
+        seasons_df = self._process_season_totals(player_df, player_id)
         # Process awards data
         awards_df = self._process_awards(player_df, player_id)
 
         return player_df, seasons_df, awards_df
     
-    def _process_seasons(self, player_df: pd.DataFrame, player_id: str) -> pd.DataFrame:
+    def _process_season_totals(self, player_df: pd.DataFrame, player_id: str) -> pd.DataFrame:
         """Processes season totals data."""
         seasons_df = pd.json_normalize(player_df['seasonTotals'].iloc[0])
         seasons_df.insert(0, 'playerId', player_id)
