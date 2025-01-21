@@ -62,7 +62,7 @@ class NHLScraper:
             return pd.DataFrame(), pd.DataFrame()
 
 
-    async def scrape_current_season_async(self, team_codes: Optional[Union[str, List[str]]] = None) -> Dict[str, pd.DataFrame]:
+    async def _scrape_current_season_async(self, team_codes: Optional[Union[str, List[str]]] = None) -> Dict[str, pd.DataFrame]:
         """Scrape current season data for all game types
         return Dict has keys 'teams', 'skaters', 'goalies' with corresponding DataFrames
         """
@@ -141,7 +141,7 @@ class NHLScraper:
     ) -> Dict[str, pd.DataFrame]:
         """Synchronous wrapper for the async scraper"""
         loop = asyncio.get_event_loop()
-        return await self.scrape_current_season_async(team_codes)
+        return await self._scrape_current_season_async(team_codes)
 
     def scrape_team_gametypes(self, tricode: str):
         """Scrape all gametypes (Seasons Reg/PO) for a team(tricode)"""
@@ -317,11 +317,11 @@ class NHLScraper:
             return await asyncio.gather(*tasks)
         
 
-def main():
+async def main():
     scraper = NHLScraper()
     
     # Scrape current season data
-    current_data = scraper.scrape_current_season()
+    current_data = await scraper.scrape_current_season()
     
     # Save to CSV files with current season in filename
     season = scraper.get_current_season()
@@ -347,4 +347,4 @@ def main():
                 print(top_scorers)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
