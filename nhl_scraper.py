@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 import aiohttp
 import asyncio
+from sqlalchemy import text
 
 class NHLScraper:
     def __init__(self):
@@ -43,6 +44,49 @@ class NHLScraper:
         response.raise_for_status()
         data = response.json()
         return pd.DataFrame(data.get("data", []))
+    
+    def get_all_drafts(self) -> pd.DataFrame:
+        """"""
+        url = f"{self.base_url}/draft"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        return pd.DataFrame(data.get("data", []))
+    
+    async def scrape_all_drafts_async(self) -> pd.DataFrame:
+        """Scrape draft data for all available years and return as DataFrame."""
+        try:
+            draft_df = self.get_all_drafts()
+            urls = [
+                f"https://api-web.nhle.com/v1/draft/picks/{draft}/all" 
+                for draft in draft_df['draftYear'].to_list()
+            ]
+            
+            responses = await self._fetch_all_data(urls)
+            
+            # Process responses into a unified DataFrame
+            all_picks = []
+            for response, draft_year in zip(responses, draft_df['draftYear']):
+                if response and 'picks' in response:
+                    picks = response['picks']
+                    # Add draft year to each pick
+                    for pick in picks:
+                        pick['draftYear'] = draft_year
+                        for key, value in pick.items():
+                            if isinstance(value, dict) and 'default' in value:
+                                pick[key] = value['default']
+
+                    all_picks.extend(picks)
+            
+            # if not all_picks:
+            #     self.logger.error("No draft data was successfully retrieved")
+            #     return pd.DataFrame()
+                
+            return pd.DataFrame(all_picks)
+            
+        except Exception as e:
+            self.logger.error(f"Error in scrape_all_drafts: {e}")
+            return pd.DataFrame()
     
     
     def get_team_current_stats(self, tricode: str, game_type: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -241,9 +285,104 @@ class NHLScraper:
         # Process seasonTotals data
         seasons_df = self._process_season_totals(player_df, player_id)
         # Process awards data
-        awards_df = self._process_awards(player_df, player_id)
+        awards_df = (self._process_awards(player_df, player_id) 
+                    if 'awards' in player_df.columns 
+                    else pd.DataFrame())        
+        cols_to_drop = [
+        'badges', 'last5Games', 'seasonTotals', 
+        'currentTeamRoster', 'awards', 'shopLink', 
+        'twitterLink', 'watchLink'
+        ]
+        existing_cols = [col for col in cols_to_drop if col in player_df.columns]
 
+        player_df.drop(columns=existing_cols, inplace=True)
         return player_df, seasons_df, awards_df
+    
+
+
+
+    
+    async def scrape_all_players(self, player_ids: List[str], engine,batch_size: int = 100) -> None:
+        # Create URLs for all players
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("TRUNCATE TABLE newapi.player, newapi.season, newapi.award"))
+                connection.commit()
+
+            urls = [f"{self.web_api_url}/player/{player_id}/landing" for player_id in player_ids]
+            # Process in batches
+            for i in range(0, len(urls), batch_size):
+                batch_urls = urls[i:i + batch_size]
+                batch_ids = player_ids[i:i + batch_size]
+                
+                # Fetch batch of data
+                responses = await self._fetch_all_data(batch_urls)
+                
+                # Process responses
+                all_players = []
+                all_seasons = []
+                all_awards = []
+                
+                for response, player_id in zip(responses, batch_ids):
+                    if response:
+                            player_df = pd.json_normalize(response)
+                            seasons_df = self._process_season_totals(player_df, player_id)
+                            awards_df = (self._process_awards(player_df, player_id) 
+                                    if 'awards' in player_df.columns 
+                                    else pd.DataFrame())
+
+                            cols_to_drop = ['badges', 'last5Games', 'seasonTotals', 
+                                        'currentTeamRoster', 'awards', 'shopLink', 
+                                        'twitterLink', 'watchLink']
+                            existing_cols = [col for col in cols_to_drop if col in player_df.columns]
+                            player_df.drop(columns=existing_cols, inplace=True)
+                            
+                            all_players.append(player_df)
+                            all_seasons.append(seasons_df)
+                            all_awards.append(awards_df)
+
+                with engine.connect() as conn:
+                    if all_players:
+                        pd.concat(all_players).to_sql('player', conn, if_exists='append', index=False, schema='newapi')
+                    if all_seasons:
+                        pd.concat(all_seasons).to_sql('season', conn, if_exists='append', index=False, schema='newapi')
+                    if all_awards:
+                        pd.concat(all_awards).to_sql('award', conn, if_exists='append', index=False, schema='newapi')
+                    conn.commit()
+        except Exception as e:
+            self.logger.error(f"Error writing batch to database: {e}")
+            raise
+        self.logger.info(f"Processed batch {i//batch_size + 1}, {len(batch_urls)} players")
+            
+
+    async def _get_all_player_columns(self, player_ids: List[str], batch_size: int = 50):
+        urls = [f"{self.web_api_url}/player/{player_id}/landing" for player_id in player_ids]
+        all_columns = set()
+        
+        for i in range(0, len(urls), batch_size):
+            batch_urls = urls[i:i + batch_size]
+            batch_ids = player_ids[i:i + batch_size]
+            
+            responses = await self._fetch_all_data(batch_urls)
+            
+            for response, player_id in zip(responses, batch_ids):
+                if response:
+                    try:
+                        player_df = pd.json_normalize(response)
+                        cols_to_drop = ['badges', 'last5Games', 'seasonTotals', 
+                                    'currentTeamRoster', 'awards', 'shopLink', 
+                                    'twitterLink', 'watchLink']
+                        existing_cols = [col for col in cols_to_drop if col in player_df.columns]
+                        player_df.drop(columns=existing_cols, inplace=True)
+                        
+                        all_columns.update(player_df.columns)
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error processing player {player_id}: {e}")
+            
+            self.logger.info(f"Processed batch {i//batch_size + 1}")
+        
+        return sorted(list(all_columns))
     
     def _process_season_totals(self, player_df: pd.DataFrame, player_id: str) -> pd.DataFrame:
         """Processes season totals data."""
@@ -260,7 +399,7 @@ class NHLScraper:
             {
                 'playerId': player_id,
                 'trophy_default': row['trophy.default'],
-                'trophy_fr': row['trophy.fr'],
+                'trophy_fr': row.get('trophy.fr'),
                 **season
             }
             for _, row in awards_table.iterrows()
