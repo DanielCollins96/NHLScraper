@@ -187,13 +187,26 @@ class NHLScraper:
         loop = asyncio.get_event_loop()
         return await self._scrape_current_season_async(team_codes)
 
-    def scrape_team_gametypes(self, tricode: str):
-        """Scrape all gametypes (Seasons Reg/PO) for a team(tricode)"""
-        url = f"{self.web_api_url}/club-stats-season/{tricode}"
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        return data
+    async def scrape_team_gametypes(self, tricode: Optional[str] = None) -> pd.DataFrame:
+        """Scrape all gametypes (Seasons Reg/PO) for a team(tricode) or all active teams if no tricode is provided."""
+        if tricode is None:
+            tricodes = self.active_team_codes
+        else:
+            tricodes = [tricode]
+
+        urls = [f"{self.web_api_url}/club-stats-season/{code}" for code in tricodes]
+
+        # Fetch all data asynchronously
+        responses = await self._fetch_all_data(urls)
+
+        all_data = []
+        for response, code in zip(responses, tricodes):
+            if response:
+                for entry in response:
+                    entry['triCode'] = code  # Add the team's tricode to each entry
+                all_data.extend(response)
+
+        return pd.DataFrame(all_data)
     
     async def async_scrape_all_seasons(self, active_only: bool = True):
         """Async version of scrape_all_seasons_by_gametype."""
@@ -210,17 +223,48 @@ class NHLScraper:
                     season = entry['season']
                     for game_type in entry['gameTypes']: 
                         url = f"{self.web_api_url}/club-stats/{tricode}/{season}/{game_type}"
-                        all_urls.append(url)
-                self.logger.info(f"Gathered URLs for team {tricode}")
+                        # Create a dictionary with metadata
+                        url_data = {
+                            'url': url,
+                            'tricode': tricode,
+                            'season': season,
+                            'gameType': game_type
+                        }
+                        all_urls.append(url_data)
+                    self.logger.info(f"Gathered URLs for team {tricode}")
             except Exception as e:
                 self.logger.error(f"Error gathering URLs for team {tricode}: {e}")
                 continue
 
-        # Fetch all data asynchronously
-        responses = await self._fetch_all_data(all_urls)
+        # Extract just the URLs for the API call
+        urls = [item['url'] for item in all_urls]
         
-        # Filter out None responses
-        return [r for r in responses if r is not None]
+        # Fetch all data asynchronously
+        responses = await self._fetch_all_data(urls)
+        
+        # Combine responses with metadata
+        processed_responses = []
+        for response, metadata in zip(responses, all_urls):
+            if response is not None:
+                # Merge the API response with the metadata
+                if isinstance(response, dict):
+                    response.update({
+                        'teamTricode': metadata['tricode'],
+                        'season': metadata['season'],
+                        'gameType': metadata['gameType']
+                    })
+                    processed_responses.append(response)
+                else:
+                    # Handle non-dictionary responses if needed
+                    processed_response = {
+                        'data': response,
+                        'teamTricode': metadata['tricode'],
+                        'season': metadata['season'],
+                        'gameType': metadata['gameType']
+                    }
+                    processed_responses.append(processed_response)
+        
+        return processed_responses
 
     def scrape_all_seasons_by_gametype(self, active_only: bool = True):
         """
@@ -273,7 +317,6 @@ class NHLScraper:
         combined_goalies_df = pd.concat(all_goalies, ignore_index=True) if all_goalies else pd.DataFrame()
 
         return combined_skaters_df, combined_goalies_df
-
     
     def scrape_player(self, player_id: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         url = f"{self.web_api_url}/player/{player_id}/landing"
@@ -297,10 +340,6 @@ class NHLScraper:
 
         player_df.drop(columns=existing_cols, inplace=True)
         return player_df, seasons_df, awards_df
-    
-
-
-
     
     async def scrape_all_players(self, player_ids: List[str], engine,batch_size: int = 100) -> None:
         # Create URLs for all players
@@ -420,7 +459,7 @@ class NHLScraper:
             if season:
                 skaters_df['season'] = season
             if tricode:
-                skaters_df['team'] = tricode
+                skaters_df['triCode'] = tricode
         
         # Process goalies
         goalies_df = pd.DataFrame(data.get('goalies', []))
