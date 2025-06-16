@@ -218,8 +218,8 @@ class NHLScraper:
 
         for tricode in teams:
             try:
-                gametypes_data = self.scrape_team_gametypes(tricode)
-                for entry in gametypes_data:
+                gametypes_data = await self.scrape_team_gametypes(tricode)
+                for entry in gametypes_data.to_dict(orient='records'):
                     season = entry['season']
                     for game_type in entry['gameTypes']: 
                         url = f"{self.web_api_url}/club-stats/{tricode}/{season}/{game_type}"
