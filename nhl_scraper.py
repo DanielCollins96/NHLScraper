@@ -1,6 +1,5 @@
 import requests
 import pandas as pd
-from time import sleep
 from typing import List, Dict, Any, Tuple, Union, Optional
 import logging
 from datetime import datetime
@@ -34,29 +33,27 @@ class NHLScraper:
             season = f"{current_year - 1}{current_year}"
         return season
 
-    def get_all_teams(self) -> pd.DataFrame:
-        """
-        Fetch all teams and their details using the /team endpoint.
-        Returns a list of team dictionaries.
-        """
+    async def get_all_teams(self) -> pd.DataFrame:
+        """Fetch all teams and their details using the /team endpoint."""
         url = f"{self.base_url}/team"
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        return pd.DataFrame(data.get("data", []))
+        response = await self._fetch_all_data([url], batch_size=1)
+        payload = response[0] if response and response[0] else {}
+        return pd.DataFrame(payload.get("data", []))
     
-    def get_all_drafts(self) -> pd.DataFrame:
-        """"""
+    async def get_all_drafts(self) -> pd.DataFrame:
+        """Fetch every draft entry available from the stats endpoint."""
         url = f"{self.base_url}/draft"
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        return pd.DataFrame(data.get("data", []))
+        response = await self._fetch_all_data([url], batch_size=1)
+        payload = response[0] if response and response[0] else {}
+        return pd.DataFrame(payload.get("data", []))
     
     async def scrape_all_drafts_async(self) -> pd.DataFrame:
         """Scrape draft data for all available years and return as DataFrame."""
         try:
-            draft_df = self.get_all_drafts()
+            draft_df = await self.get_all_drafts()
+            if draft_df.empty or 'draftYear' not in draft_df.columns:
+                self.logger.warning("No draft metadata returned; skipping pick fetch")
+                return pd.DataFrame()
             urls = [
                 f"https://api-web.nhle.com/v1/draft/picks/{draft}/all" 
                 for draft in draft_df['draftYear'].to_list()
@@ -183,8 +180,7 @@ class NHLScraper:
         self, 
         team_codes: Optional[Union[str, List[str]]] = None
     ) -> Dict[str, pd.DataFrame]:
-        """Synchronous wrapper for the async scraper"""
-        loop = asyncio.get_event_loop()
+        """Public coroutine that retrieves current season data."""
         return await self._scrape_current_season_async(team_codes)
 
     async def scrape_team_gametypes(self, tricode: Optional[str] = None) -> pd.DataFrame:
@@ -208,11 +204,15 @@ class NHLScraper:
 
         return pd.DataFrame(all_data)
     
-    async def async_scrape_all_seasons(self, active_only: bool = True):
-        """Async version of scrape_all_seasons_by_gametype."""
+    async def _scrape_all_seasons_async(self, active_only: bool = True):
+        """Collect every season/game-type payload for the requested teams."""
         # Gather URLs first
         all_urls = []
-        teams = self.get_all_teams()['triCode'].tolist()
+        team_df = await self.get_all_teams()
+        if 'triCode' not in team_df.columns:
+            self.logger.warning("Team metadata missing 'triCode'; aborting season scrape")
+            return []
+        teams = team_df['triCode'].dropna().tolist()
         if active_only:
             teams = [team for team in teams if team in self.active_team_codes]
 
@@ -266,20 +266,13 @@ class NHLScraper:
         
         return processed_responses
 
-    def scrape_all_seasons_by_gametype(self, active_only: bool = True):
-        """
-        Scrape all team data, including gametypes and seasons.
-        Optionally restrict to active teams only.
-        """
-        try:
-            # Get the current event loop if it exists
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # If no loop is running, create and run a new one
-            return asyncio.run(self.async_scrape_all_seasons(active_only))
-        else:
-            # Return coroutine directly to allow 'await'
-            return self.async_scrape_all_seasons(active_only)
+    async def scrape_all_seasons_by_gametype(self, active_only: bool = True):
+        """Fetch all team data, including game types and seasons."""
+        return await self._scrape_all_seasons_async(active_only)
+
+    def scrape_all_seasons_by_gametype_sync(self, active_only: bool = True):
+        """Synchronous helper that runs the coroutine for convenience."""
+        return asyncio.run(self._scrape_all_seasons_async(active_only))
         
     async def process_all_teams(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -350,76 +343,84 @@ class NHLScraper:
 
             urls = [f"{self.web_api_url}/player/{player_id}/landing" for player_id in player_ids]
             # Process in batches
-            for i in range(0, len(urls), batch_size):
-                batch_urls = urls[i:i + batch_size]
-                batch_ids = player_ids[i:i + batch_size]
-                
-                # Fetch batch of data
-                responses = await self._fetch_all_data(batch_urls)
-                
-                # Process responses
-                all_players = []
-                all_seasons = []
-                all_awards = []
-                
-                for response, player_id in zip(responses, batch_ids):
-                    if response:
-                            player_df = pd.json_normalize(response)
-                            seasons_df = self._process_season_totals(player_df, player_id)
-                            awards_df = (self._process_awards(player_df, player_id) 
-                                    if 'awards' in player_df.columns 
-                                    else pd.DataFrame())
+            async with aiohttp.ClientSession() as session:
+                for i in range(0, len(urls), batch_size):
+                    batch_urls = urls[i:i + batch_size]
+                    batch_ids = player_ids[i:i + batch_size]
 
-                            cols_to_drop = ['badges', 'last5Games', 'seasonTotals', 
-                                        'currentTeamRoster', 'awards', 'shopLink', 
-                                        'twitterLink', 'watchLink']
-                            existing_cols = [col for col in cols_to_drop if col in player_df.columns]
-                            player_df.drop(columns=existing_cols, inplace=True)
-                            
-                            all_players.append(player_df)
-                            all_seasons.append(seasons_df)
-                            all_awards.append(awards_df)
+                    # Fetch batch of data
+                    responses = await self._fetch_all_data(batch_urls, session=session)
 
-                with engine.connect() as conn:
-                    if all_players:
-                        pd.concat(all_players).to_sql('player', conn, if_exists='append', index=False, schema='newapi')
-                    if all_seasons:
-                        pd.concat(all_seasons).to_sql('season', conn, if_exists='append', index=False, schema='newapi')
-                    if all_awards:
-                        pd.concat(all_awards).to_sql('award', conn, if_exists='append', index=False, schema='newapi')
-                    conn.commit()
+                    # Process responses
+                    all_players = []
+                    all_seasons = []
+                    all_awards = []
+
+                    for response, player_id in zip(responses, batch_ids):
+                        if not response:
+                            continue
+
+                        player_df = pd.json_normalize(response)
+                        seasons_df = self._process_season_totals(player_df, player_id)
+                        awards_df = (
+                            self._process_awards(player_df, player_id)
+                            if 'awards' in player_df.columns
+                            else pd.DataFrame()
+                        )
+
+                        cols_to_drop = [
+                            'badges', 'last5Games', 'seasonTotals',
+                            'currentTeamRoster', 'awards', 'shopLink',
+                            'twitterLink', 'watchLink'
+                        ]
+                        existing_cols = [col for col in cols_to_drop if col in player_df.columns]
+                        player_df.drop(columns=existing_cols, inplace=True)
+
+                        all_players.append(player_df)
+                        all_seasons.append(seasons_df)
+                        all_awards.append(awards_df)
+
+                    with engine.connect() as conn:
+                        if all_players:
+                            pd.concat(all_players).to_sql('player', conn, if_exists='append', index=False, schema='newapi')
+                        if all_seasons:
+                            pd.concat(all_seasons).to_sql('season', conn, if_exists='append', index=False, schema='newapi')
+                        if all_awards:
+                            pd.concat(all_awards).to_sql('award', conn, if_exists='append', index=False, schema='newapi')
+                        conn.commit()
+                    self.logger.info(f"Processed batch {i//batch_size + 1}, {len(batch_urls)} players")
         except Exception as e:
             self.logger.error(f"Error writing batch to database: {e}")
             raise
-        self.logger.info(f"Processed batch {i//batch_size + 1}, {len(batch_urls)} players")
             
 
     async def _get_all_player_columns(self, player_ids: List[str], batch_size: int = 50):
         urls = [f"{self.web_api_url}/player/{player_id}/landing" for player_id in player_ids]
         all_columns = set()
         
-        for i in range(0, len(urls), batch_size):
-            batch_urls = urls[i:i + batch_size]
-            batch_ids = player_ids[i:i + batch_size]
-            
-            responses = await self._fetch_all_data(batch_urls)
-            
-            for response, player_id in zip(responses, batch_ids):
-                if response:
-                    try:
-                        player_df = pd.json_normalize(response)
-                        cols_to_drop = ['badges', 'last5Games', 'seasonTotals', 
-                                    'currentTeamRoster', 'awards', 'shopLink', 
-                                    'twitterLink', 'watchLink']
-                        existing_cols = [col for col in cols_to_drop if col in player_df.columns]
-                        player_df.drop(columns=existing_cols, inplace=True)
-                        
-                        all_columns.update(player_df.columns)
-                        
-                    except Exception as e:
-                        self.logger.error(f"Error processing player {player_id}: {e}")
-            
-            self.logger.info(f"Processed batch {i//batch_size + 1}")
+        async with aiohttp.ClientSession() as session:
+            for i in range(0, len(urls), batch_size):
+                batch_urls = urls[i:i + batch_size]
+                batch_ids = player_ids[i:i + batch_size]
+
+                responses = await self._fetch_all_data(batch_urls, session=session)
+
+                for response, player_id in zip(responses, batch_ids):
+                    if response:
+                        try:
+                            player_df = pd.json_normalize(response)
+                            cols_to_drop = ['badges', 'last5Games', 'seasonTotals',
+                                        'currentTeamRoster', 'awards', 'shopLink',
+                                        'twitterLink', 'watchLink']
+                            existing_cols = [col for col in cols_to_drop if col in player_df.columns]
+                            player_df.drop(columns=existing_cols, inplace=True)
+
+                            all_columns.update(player_df.columns)
+
+                        except Exception as e:
+                            self.logger.error(f"Error processing player {player_id}: {e}")
+
+                self.logger.info(f"Processed batch {i//batch_size + 1}")
         
         return sorted(list(all_columns))
     
@@ -460,6 +461,7 @@ class NHLScraper:
                 skaters_df['season'] = season
             if tricode:
                 skaters_df['triCode'] = tricode
+                skaters_df['team'] = tricode
         
         # Process goalies
         goalies_df = pd.DataFrame(data.get('goalies', []))
@@ -472,6 +474,7 @@ class NHLScraper:
                 goalies_df['season'] = season
             if tricode:
                 goalies_df['team'] = tricode
+                goalies_df['triCode'] = tricode
         
         return skaters_df, goalies_df
     
@@ -488,11 +491,32 @@ class NHLScraper:
             self.logger.error(f"Error fetching {url}: {e}")
             return None
     
-    async def _fetch_all_data(self, urls: List[str], batch_size: int = 10) -> List[dict]:
-        """Fetch data from multiple URLs concurrently."""
-        async with aiohttp.ClientSession() as session:
-            tasks = [self._fetch_data(session, url) for url in urls]
-            return await asyncio.gather(*tasks)
+    async def _fetch_all_data(
+        self,
+        urls: List[str],
+        batch_size: int = 10,
+        session: Optional[aiohttp.ClientSession] = None,
+    ) -> List[Optional[dict]]:
+        """Fetch data from multiple URLs while clamping concurrency."""
+
+        if not urls:
+            return []
+
+        semaphore = asyncio.Semaphore(max(batch_size, 1))
+
+        async def bound_fetch(active_session: aiohttp.ClientSession, url: str) -> Optional[dict]:
+            async with semaphore:
+                return await self._fetch_data(active_session, url)
+
+        owns_session = session is None
+
+        if owns_session:
+            async with aiohttp.ClientSession() as managed_session:
+                tasks = [asyncio.create_task(bound_fetch(managed_session, url)) for url in urls]
+                return await asyncio.gather(*tasks)
+
+        tasks = [asyncio.create_task(bound_fetch(session, url)) for url in urls]
+        return await asyncio.gather(*tasks)
         
 
 async def main():
