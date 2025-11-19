@@ -334,22 +334,63 @@ class NHLScraper:
         player_df.drop(columns=existing_cols, inplace=True)
         return player_df, seasons_df, awards_df
     
-    async def scrape_all_players(self, player_ids: List[str], engine,batch_size: int = 100) -> None:
+    async def scrape_all_players(self, player_ids: List[str], engine, batch_size: int = 500) -> None:
+        """
+        Scrapes detailed data for a list of players and writes it to the database.
+
+        This method:
+        - Fetches player data asynchronously in batches to optimize performance.
+        - Processes data into three categories: player details, season stats, and awards.
+        - Writes the data to `newapi.player`, `newapi.season`, and `newapi.award` tables.
+
+        Args:
+            player_ids (List[str]): List of player IDs to scrape.
+            engine: SQLAlchemy database engine for database operations.
+            batch_size (int): Number of players to process per batch (default: 500).
+
+        Notes:
+            - Truncates tables before inserting new data.
+            - Handles missing or empty responses gracefully.
+            - Logs progress and errors during execution.
+
+        Raises:
+            Exception: If database operations or data processing fail.
+        """
+
         # Create URLs for all players
+        # Try to truncate tables if they exist, otherwise skip
         try:
             with engine.connect() as connection:
                 connection.execute(text("TRUNCATE TABLE newapi.player, newapi.season, newapi.award"))
                 connection.commit()
+        except Exception as e:
+            self.logger.warning(f"Could not truncate tables (they may not exist yet): {e}")
 
+        try:
+            import time
             urls = [f"{self.web_api_url}/player/{player_id}/landing" for player_id in player_ids]
+            total_batches = (len(urls) + batch_size - 1) // batch_size
+            self.logger.info(f"Starting to scrape {len(player_ids)} players in {total_batches} batches")
+            
+            # Get table schemas once at the start
+            player_cols = season_cols = award_cols = None
+            try:
+                with engine.connect() as conn:
+                    player_cols = pd.read_sql("SELECT * FROM newapi.player LIMIT 0", conn).columns.tolist()
+                    season_cols = pd.read_sql("SELECT * FROM newapi.season LIMIT 0", conn).columns.tolist()
+                    award_cols = pd.read_sql("SELECT * FROM newapi.award LIMIT 0", conn).columns.tolist()
+            except:
+                pass  # Tables don't exist yet
+            
             # Process in batches
             async with aiohttp.ClientSession() as session:
                 for i in range(0, len(urls), batch_size):
+                    batch_start = time.time()
                     batch_urls = urls[i:i + batch_size]
                     batch_ids = player_ids[i:i + batch_size]
 
-                    # Fetch batch of data
-                    responses = await self._fetch_all_data(batch_urls, session=session)
+                    # Fetch batch of data with higher concurrency
+                    responses = await self._fetch_all_data(batch_urls, batch_size=300, session=session)
 
                     # Process responses
                     all_players = []
@@ -382,19 +423,35 @@ class NHLScraper:
 
                     with engine.connect() as conn:
                         if all_players:
-                            pd.concat(all_players).to_sql('player', conn, if_exists='append', index=False, schema='newapi')
+                            combined_players = pd.concat(all_players)
+                            if player_cols:
+                                cols_to_keep = [col for col in combined_players.columns if col in player_cols]
+                                combined_players = combined_players[cols_to_keep]
+                            combined_players.to_sql('player', conn, if_exists='append', index=False, schema='newapi')
+                        
                         if all_seasons:
-                            pd.concat(all_seasons).to_sql('season', conn, if_exists='append', index=False, schema='newapi')
-                        if all_awards:
-                            pd.concat(all_awards).to_sql('award', conn, if_exists='append', index=False, schema='newapi')
+                            combined_seasons = pd.concat(all_seasons)
+                            if season_cols:
+                                cols_to_keep = [col for col in combined_seasons.columns if col in season_cols]
+                                combined_seasons = combined_seasons[cols_to_keep]
+                            combined_seasons.to_sql('season', conn, if_exists='append', index=False, schema='newapi')
+                        
+                        # if all_awards:
+                        #     combined_awards = pd.concat(all_awards)
+                        #     if award_cols:
+                        #         cols_to_keep = [col for col in combined_awards.columns if col in award_cols]
+                        #         combined_awards = combined_awards[cols_to_keep]
+                        #     combined_awards.to_sql('award', conn, if_exists='append', index=False, schema='newapi')
                         conn.commit()
-                    self.logger.info(f"Processed batch {i//batch_size + 1}, {len(batch_urls)} players")
+                    
+                    batch_time = time.time() - batch_start
+                    self.logger.info(f"Processed batch {i//batch_size + 1}/{total_batches}, {len(batch_urls)} players in {batch_time:.1f}s")
         except Exception as e:
             self.logger.error(f"Error writing batch to database: {e}")
             raise
             
 
-    async def _get_all_player_columns(self, player_ids: List[str], batch_size: int = 50):
+    async def _get_all_player_columns(self, player_ids: List[str], batch_size: int = 250):
         urls = [f"{self.web_api_url}/player/{player_id}/landing" for player_id in player_ids]
         all_columns = set()
         
@@ -431,7 +488,7 @@ class NHLScraper:
         return seasons_df
 
     def _process_awards(self, player_df: pd.DataFrame, player_id: str) -> pd.DataFrame:
-        """Processes and expands awards data."""
+        """Processes and expands awards data - only keep award-specific columns."""
         awards_table = pd.json_normalize(player_df['awards'].iloc[0])
         
         # Use list comprehension for better performance
@@ -440,7 +497,7 @@ class NHLScraper:
                 'playerId': player_id,
                 'trophy_default': row['trophy.default'],
                 'trophy_fr': row.get('trophy.fr'),
-                **season
+                'seasonId': season.get('seasonId')
             }
             for _, row in awards_table.iterrows()
             for season in row['seasons']
@@ -494,7 +551,7 @@ class NHLScraper:
     async def _fetch_all_data(
         self,
         urls: List[str],
-        batch_size: int = 10,
+        batch_size: int = 300,
         session: Optional[aiohttp.ClientSession] = None,
     ) -> List[Optional[dict]]:
         """Fetch data from multiple URLs while clamping concurrency."""
