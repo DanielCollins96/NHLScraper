@@ -502,6 +502,7 @@ class NHLScraper:
         if not skaters_df.empty:
             skaters_df['firstName'] = skaters_df['firstName'].apply(lambda x: x.get('default', ''))
             skaters_df['lastName'] = skaters_df['lastName'].apply(lambda x: x.get('default', ''))
+            skaters_df['fullName'] = skaters_df['firstName'] + ' ' + skaters_df['lastName']
             if game_type:
                 skaters_df['gameType'] = game_type
             if season:
@@ -514,6 +515,7 @@ class NHLScraper:
         if not goalies_df.empty:
             goalies_df['firstName'] = goalies_df['firstName'].apply(lambda x: x.get('default', ''))
             goalies_df['lastName'] = goalies_df['lastName'].apply(lambda x: x.get('default', ''))
+            goalies_df['fullName'] = goalies_df['firstName'] + ' ' + goalies_df['lastName']
             if game_type:
                 goalies_df['gameType'] = game_type
             if season:
