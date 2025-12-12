@@ -44,10 +44,58 @@ class NHLScraper:
         response.raise_for_status()
         data = response.json()
         return pd.DataFrame(data.get("data", []))
+
+    def get_team_summary(self) -> pd.DataFrame:
+        """
+        Fetch team summary statistics (wins, losses, goals for/against, etc) 
+        for all teams and seasons.
+        """
+        url = f"{self.base_url}/team/summary"
+        limit = 50
+        all_data = []
+        offset = 0
+
+        while True:
+            params = {
+                "limit": limit,
+                "start": offset,
+                "sort": "seasonId"
+            }
+            try:
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data.get('data'):
+                    break
+                    
+                all_data.extend(data['data'])
+                
+                if len(data['data']) < limit:
+                    break
+                    
+                offset += limit
+                
+            except requests.RequestException as e:
+                self.logger.error(f"Error fetching team summary: {e}")
+                break
+
+        return pd.DataFrame(all_data)
     
     def get_all_drafts(self) -> pd.DataFrame:
         """"""
         url = f"{self.base_url}/draft"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        return pd.DataFrame(data.get("data", []))
+
+    def get_all_franchises(self) -> pd.DataFrame:
+        """
+        Fetch all franchises and their details using the /franchise endpoint.
+        Returns a DataFrame of franchise data.
+        """
+        url = f"{self.base_url}/franchise"
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
@@ -475,6 +523,88 @@ class NHLScraper:
         
         return skaters_df, goalies_df
     
+    async def scrape_all_rosters(self, team_codes: Optional[List[str]] = None, delay: float = 0.7) -> pd.DataFrame:
+        """
+        Scrape current rosters for all teams or specified teams.
+        
+        Args:
+            team_codes: Optional list of team abbreviations. If None, scrapes all active teams.
+            delay: Delay between requests in seconds to avoid rate limiting.
+            
+        Returns:
+            DataFrame with all players from all team rosters, including columns:
+            - teamAbbreviation: Team code (e.g., 'TOR', 'NYR')
+            - position: 'forwards', 'defensemen', or 'goalies'
+            - playerId: Player's unique ID
+            - sweaterNumber: Jersey number
+            - firstName: Player's first name
+            - lastName: Player's last name
+        """
+        teams_to_scrape = team_codes if team_codes is not None else self.active_team_codes
+        
+        # Validate team codes if provided
+        if team_codes is not None:
+            invalid_teams = [team for team in teams_to_scrape if team not in self.active_team_codes]
+            if invalid_teams:
+                raise ValueError(f"Invalid team code(s): {invalid_teams}")
+        
+        all_players = []
+        
+        async with aiohttp.ClientSession() as session:
+            for team in teams_to_scrape:
+                try:
+                    url = f"{self.web_api_url}/roster/{team}/current"
+                    self.logger.info(f"Fetching roster for {team}...")
+                    
+                    async with session.get(url) as res:
+                        if res.status != 200:
+                            self.logger.error(f"Failed to fetch roster for {team}: {res.status}")
+                            continue
+                        
+                        data = await res.json()
+                        self.logger.info(f"Successfully fetched roster for {team}")
+                        
+                        # Process each position group
+                        for position in ['forwards', 'defensemen', 'goalies']:
+                            players = data.get(position, [])
+                            for player in players:
+                                player_data = {
+                                    'teamAbbreviation': team,
+                                    'positionGroup': position,
+                                    'playerId': player.get('id'),
+                                    'headshot': player.get('headshot'),
+                                    'firstName': player.get('firstName', {}).get('default', ''),
+                                    'lastName': player.get('lastName', {}).get('default', ''),
+                                    'sweaterNumber': player.get('sweaterNumber'),
+                                    'positionCode': player.get('positionCode'),
+                                    'shootsCatches': player.get('shootsCatches'),
+                                    'heightInInches': player.get('heightInInches'),
+                                    'weightInPounds': player.get('weightInPounds'),
+                                    'heightInCentimeters': player.get('heightInCentimeters'),
+                                    'weightInKilograms': player.get('weightInKilograms'),
+                                    'birthDate': player.get('birthDate'),
+                                    'birthCity': player.get('birthCity', {}).get('default', ''),
+                                    'birthCountry': player.get('birthCountry'),
+                                    'birthStateProvince': player.get('birthStateProvince', {}).get('default', ''),
+                                }
+                                all_players.append(player_data)
+                    
+                    # Add delay to avoid rate limiting
+                    await asyncio.sleep(delay)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error fetching roster for {team}: {e}")
+                    continue
+        
+        # Create DataFrame and sort by team and full name
+        df = pd.DataFrame(all_players)
+        if not df.empty:
+            df['fullName'] = df['firstName'] + ' ' + df['lastName']
+            df = df.sort_values(['teamAbbreviation', 'positionGroup', 'fullName'])
+            df = df.reset_index(drop=True)
+        
+        return df
+
     async def _fetch_data(self, session, url):
         """Fetch data from a single URL."""
         try:
@@ -523,6 +653,20 @@ async def main():
                 top_scorers = game_type_df.nlargest(5, 'points')[
                     ['firstName', 'lastName', 'team', 'goals', 'assists', 'points']]
                 print(top_scorers)
+    
+    # Scrape all team rosters
+    print("\n" + "="*50)
+    print("ROSTER SCRAPING")
+    print("="*50)
+    
+    rosters_df = await scraper.scrape_all_rosters()
+    rosters_df.to_csv(f"nhl_rosters_{season}.csv", index=False)
+    
+    print(f"\nTotal players across all rosters: {len(rosters_df)}")
+    print("\nPlayers by position:")
+    print(rosters_df.groupby('position').size())
+    print("\nPlayers per team:")
+    print(rosters_df.groupby('teamAbbreviation').size())
 
 if __name__ == "__main__":
     asyncio.run(main())
