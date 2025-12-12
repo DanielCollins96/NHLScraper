@@ -390,12 +390,16 @@ class NHLScraper:
         return player_df, seasons_df, awards_df
     
     async def scrape_all_players(self, player_ids: List[str], engine,batch_size: int = 100) -> None:
-        # Create URLs for all players
-        try:
-            with engine.connect() as connection:
-                connection.execute(text("TRUNCATE TABLE newapi.player, newapi.season, newapi.award"))
-                connection.commit()
+        # Deduplicate player_ids to prevent duplicate processing
+        player_ids = list(set(player_ids))
 
+        # Create URLs for all players
+        all_players = []
+        all_skater_seasons = []
+        all_goalie_seasons = []
+        all_awards = []
+
+        try:
             urls = [f"{self.web_api_url}/player/{player_id}/landing" for player_id in player_ids]
             # Process in batches
             for i in range(0, len(urls), batch_size):
@@ -406,14 +410,18 @@ class NHLScraper:
                 responses = await self._fetch_all_data(batch_urls)
                 
                 # Process responses
-                all_players = []
-                all_seasons = []
-                all_awards = []
-                
                 for response, player_id in zip(responses, batch_ids):
                     if response:
                             player_df = pd.json_normalize(response)
                             seasons_df = self._process_season_totals(player_df, player_id)
+                            
+                            # Check position to split seasons
+                            position = player_df['position'].iloc[0] if 'position' in player_df.columns else None
+                            if position == 'G':
+                                all_goalie_seasons.append(seasons_df)
+                            else:
+                                all_skater_seasons.append(seasons_df)
+
                             awards_df = (self._process_awards(player_df, player_id) 
                                     if 'awards' in player_df.columns 
                                     else pd.DataFrame())
@@ -425,21 +433,25 @@ class NHLScraper:
                             player_df.drop(columns=existing_cols, inplace=True)
                             
                             all_players.append(player_df)
-                            all_seasons.append(seasons_df)
                             all_awards.append(awards_df)
 
-                with engine.connect() as conn:
-                    if all_players:
-                        pd.concat(all_players).to_sql('player', conn, if_exists='append', index=False, schema='newapi')
-                    if all_seasons:
-                        pd.concat(all_seasons).to_sql('season', conn, if_exists='append', index=False, schema='newapi')
-                    if all_awards:
-                        pd.concat(all_awards).to_sql('award', conn, if_exists='append', index=False, schema='newapi')
-                    conn.commit()
+                current_batch = i // batch_size + 1
+                total_batches = (len(urls) + batch_size - 1) // batch_size
+                self.logger.info(f"Processed batch {current_batch}/{total_batches} ({len(batch_urls)} players)")
+
+            with engine.connect() as conn:
+                if all_players:
+                    pd.concat(all_players, ignore_index=True).to_sql('player', conn, if_exists='replace', index=False, schema='staging1')
+                if all_skater_seasons:
+                    pd.concat(all_skater_seasons, ignore_index=True).to_sql('season_skater', conn, if_exists='replace', index=False, schema='staging1')
+                if all_goalie_seasons:
+                    pd.concat(all_goalie_seasons, ignore_index=True).to_sql('season_goalie', conn, if_exists='replace', index=False, schema='staging1')
+                if all_awards:
+                    pd.concat(all_awards, ignore_index=True).to_sql('award', conn, if_exists='replace', index=False, schema='staging1')
+                conn.commit()
         except Exception as e:
-            self.logger.error(f"Error writing batch to database: {e}")
+            self.logger.error(f"Error writing to database: {e}")
             raise
-        self.logger.info(f"Processed batch {i//batch_size + 1}, {len(batch_urls)} players")
             
 
     async def _get_all_player_columns(self, player_ids: List[str], batch_size: int = 50):
