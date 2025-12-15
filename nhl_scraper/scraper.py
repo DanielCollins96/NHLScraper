@@ -258,20 +258,28 @@ class NHLScraper:
     
     async def async_scrape_all_seasons(self, active_only: bool = True):
         """Async version of scrape_all_seasons_by_gametype."""
-        # Gather URLs first
-        all_urls = []
         teams = self.get_all_teams()['triCode'].tolist()
         if active_only:
             teams = [team for team in teams if team in self.active_team_codes]
 
-        for tricode in teams:
+        # Fetch all gametypes in parallel
+        self.logger.info(f"Fetching gametypes for {len(teams)} teams...")
+        gametype_tasks = [self.scrape_team_gametypes(tricode) for tricode in teams]
+        gametype_results = await asyncio.gather(*gametype_tasks, return_exceptions=True)
+
+        # Build URL list with metadata
+        all_urls = []
+        
+        for tricode, result in zip(teams, gametype_results):
+            if isinstance(result, Exception):
+                self.logger.error(f"Error gathering URLs for team {tricode}: {result}")
+                continue
+
             try:
-                gametypes_data = await self.scrape_team_gametypes(tricode)
-                for entry in gametypes_data.to_dict(orient='records'):
+                for entry in result.to_dict(orient='records'):
                     season = entry['season']
                     for game_type in entry['gameTypes']: 
                         url = f"{self.web_api_url}/club-stats/{tricode}/{season}/{game_type}"
-                        # Create a dictionary with metadata
                         url_data = {
                             'url': url,
                             'tricode': tricode,
@@ -279,13 +287,15 @@ class NHLScraper:
                             'gameType': game_type
                         }
                         all_urls.append(url_data)
-                    self.logger.info(f"Gathered URLs for team {tricode}")
+                self.logger.info(f"Gathered URLs for team {tricode}")
             except Exception as e:
-                self.logger.error(f"Error gathering URLs for team {tricode}: {e}")
+                self.logger.error(f"Error processing gametypes for team {tricode}: {e}")
                 continue
 
         # Extract just the URLs for the API call
         urls = [item['url'] for item in all_urls]
+        
+        self.logger.info(f"Fetching data for {len(urls)} team-season-gametype combinations...")
         
         # Fetch all data asynchronously
         responses = await self._fetch_all_data(urls)
@@ -293,25 +303,32 @@ class NHLScraper:
         # Combine responses with metadata
         processed_responses = []
         for response, metadata in zip(responses, all_urls):
-            if response is not None:
-                # Merge the API response with the metadata
-                if isinstance(response, dict):
-                    response.update({
-                        'teamTricode': metadata['tricode'],
-                        'season': metadata['season'],
-                        'gameType': metadata['gameType']
-                    })
-                    processed_responses.append(response)
-                else:
-                    # Handle non-dictionary responses if needed
-                    processed_response = {
-                        'data': response,
-                        'teamTricode': metadata['tricode'],
-                        'season': metadata['season'],
-                        'gameType': metadata['gameType']
-                    }
-                    processed_responses.append(processed_response)
+            if response is None:
+                self.logger.warning(
+                    f"Failed to fetch data for {metadata['tricode']} "
+                    f"{metadata['season']} {metadata['gameType']}"
+                )
+                continue
+                
+            # Merge the API response with the metadata
+            if isinstance(response, dict):
+                response.update({
+                    'teamTricode': metadata['tricode'],
+                    'season': metadata['season'],
+                    'gameType': metadata['gameType']
+                })
+                processed_responses.append(response)
+            else:
+                # Handle non-dictionary responses if needed
+                processed_response = {
+                    'data': response,
+                    'teamTricode': metadata['tricode'],
+                    'season': metadata['season'],
+                    'gameType': metadata['gameType']
+                }
+                processed_responses.append(processed_response)
         
+        self.logger.info(f"Successfully processed {len(processed_responses)}/{len(urls)} requests")
         return processed_responses
 
     def scrape_all_seasons_by_gametype(self, active_only: bool = True):
