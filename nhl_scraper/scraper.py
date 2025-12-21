@@ -585,7 +585,7 @@ class NHLScraper:
             for team in teams_to_scrape:
                 try:
                     url = f"{self.web_api_url}/roster/{team}/current"
-                    self.logger.info(f"Fetching roster for {team}...")
+                    # self.logger.info(f"Fetching roster for {team}...")
                     
                     async with session.get(url) as res:
                         if res.status != 200:
