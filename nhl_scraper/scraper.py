@@ -235,12 +235,14 @@ class NHLScraper:
         loop = asyncio.get_event_loop()
         return await self._scrape_current_season_async(team_codes)
 
-    async def scrape_team_gametypes(self, tricode: Optional[str] = None) -> pd.DataFrame:
+    async def scrape_team_gametypes(self, tricode: Optional[Union[str, List[str]]] = None) -> pd.DataFrame:
         """Scrape all gametypes (Seasons Reg/PO) for a team(tricode) or all active teams if no tricode is provided."""
         if tricode is None:
             tricodes = self.active_team_codes
-        else:
+        elif isinstance(tricode, str):
             tricodes = [tricode]
+        else:
+            tricodes = tricode
 
         urls = [f"{self.web_api_url}/club-stats-season/{code}" for code in tricodes]
 
@@ -346,19 +348,19 @@ class NHLScraper:
             # Return coroutine directly to allow 'await'
             return self.async_scrape_all_seasons(active_only)
         
-    async def process_all_teams(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    async def process_all_teams(self, active_only: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Processes all team data from `scraper.scrape_all_seasons_by_gametype()` 
         and merges all skater and goalie DataFrames.
         
         Args:
-            scraper: Instance of the scraper class.
+            active_only: If True, only process active teams. Defaults to True.
 
         Returns:
             Tuple[pd.DataFrame, pd.DataFrame]: Combined Skaters and Goalies DataFrames.
         """
         # Step 1: Fetch all team data
-        data = await self.scrape_all_seasons_by_gametype()
+        data = await self.scrape_all_seasons_by_gametype(active_only=active_only)
 
         # Step 2: Initialize empty lists for skater and goalie DataFrames
         all_skaters = []
