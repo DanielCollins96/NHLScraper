@@ -458,18 +458,34 @@ class NHLScraper:
                 total_batches = (len(urls) + batch_size - 1) // batch_size
                 self.logger.info(f"Processed batch {current_batch}/{total_batches} ({len(batch_urls)} players)")
 
-            with engine.connect() as conn:
+            with engine.begin() as conn:
                 if all_players:
-                    pd.concat(all_players, ignore_index=True).to_sql('player', conn, if_exists='replace', index=False, schema='staging1')
+                    try:
+                        pd.concat(all_players, ignore_index=True).to_sql('player', conn, if_exists='replace', index=False, schema='staging1')
+                    except Exception as e:
+                        self.logger.error(f"Failed to insert into staging1.player: {e}")
+                        raise
                 if all_skater_seasons:
-                    pd.concat(all_skater_seasons, ignore_index=True).to_sql('season_skater', conn, if_exists='replace', index=False, schema='staging1')
+                    try:
+                        pd.concat(all_skater_seasons, ignore_index=True).to_sql('season_skater', conn, if_exists='replace', index=False, schema='staging1')
+                    except Exception as e:
+                        self.logger.error(f"Failed to insert into staging1.season_skater: {e}")
+                        raise
                 if all_goalie_seasons:
-                    pd.concat(all_goalie_seasons, ignore_index=True).to_sql('season_goalie', conn, if_exists='replace', index=False, schema='staging1')
+                    try:
+                        pd.concat(all_goalie_seasons, ignore_index=True).to_sql('season_goalie', conn, if_exists='replace', index=False, schema='staging1')
+                    except Exception as e:
+                        self.logger.error(f"Failed to insert into staging1.season_goalie: {e}")
+                        raise
                 if all_awards:
-                    pd.concat(all_awards, ignore_index=True).to_sql('award', conn, if_exists='replace', index=False, schema='staging1')
-                conn.commit()
+                    try:
+                        pd.concat(all_awards, ignore_index=True).to_sql('award', conn, if_exists='replace', index=False, schema='staging1')
+                    except Exception as e:
+                        self.logger.error(f"Failed to insert into staging1.award: {e}")
+                        raise
+                # commit is automatic with engine.begin()
         except Exception as e:
-            self.logger.error(f"Error writing to database: {e}")
+            self.logger.error(f"Error in scrape_all_players: {e}")
             raise
             
 
