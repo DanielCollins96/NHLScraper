@@ -45,12 +45,18 @@ class NHLScraper:
         data = response.json()
         return pd.DataFrame(data.get("data", []))
 
-    def get_team_summary(self) -> pd.DataFrame:
+    def get_team_summary(self, current_season_only: bool = True, game_type: int = 2) -> pd.DataFrame:
         """
         Fetch team summary statistics (wins, losses, goals for/against, etc) 
         for all teams and seasons.
+        
+        Args:
+            current_season_only: If True, only fetch current season data. 
+                                If False, fetch all seasons. Defaults to True.
+            game_type: Game type to filter by. 2 for regular season, 3 for playoffs. Defaults to 2.
         """
         url = f"{self.base_url}/team/summary"
+        season_id = self.get_current_season()  # returns str like "20232024"
         limit = 50
         all_data = []
         offset = 0
@@ -59,8 +65,14 @@ class NHLScraper:
             params = {
                 "limit": limit,
                 "start": offset,
-                "sort": "seasonId"
+                "sort": "seasonId",
             }
+            
+            # Build cayenneExp filter
+            if current_season_only:
+                params["cayenneExp"] = f"seasonId={season_id} and gameTypeId={game_type}"
+            else:
+                params["cayenneExp"] = f"gameTypeId={game_type}"
             try:
                 response = requests.get(url, params=params)
                 response.raise_for_status()
