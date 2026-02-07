@@ -92,7 +92,12 @@ class NHLScraper:
                 self.logger.error(f"Error fetching team summary: {e}")
                 break
 
-        return pd.DataFrame(all_data)
+        df = pd.DataFrame(all_data)
+        # Add gameType column if not already present
+        if not df.empty and 'gameTypeId' not in df.columns:
+            df['gameTypeId'] = game_type
+        
+        return df
     
     def get_all_drafts(self) -> pd.DataFrame:
         """"""
@@ -684,7 +689,217 @@ class NHLScraper:
         async with aiohttp.ClientSession() as session:
             tasks = [self._fetch_data(session, url) for url in urls]
             return await asyncio.gather(*tasks)
-        
+
+    def get_team_schedule(self, team: str, season: str = "now") -> Dict:
+        """
+        Get schedule for a specific team.
+
+        Args:
+            team: Team tricode (e.g., 'TOR', 'NYR')
+            season: Season string (e.g., '20232024') or 'now' for current season
+
+        Returns:
+            Dict containing schedule data with 'games' key
+        """
+        if season == "now":
+            season = self.get_current_season()
+
+        url = f"{self.web_api_url}/club-schedule-season/{team}/{season}"
+        response = requests.get(url)
+        response.raise_for_status()
+        return response.json()
+
+    def scrape_all_games_team_method(self, season: str = "now") -> List[Dict]:
+        """
+        Get all teams' schedules and combine them (with deduplication).
+
+        Args:
+            season: Season string (e.g., '20232024') or 'now' for current season
+
+        Returns:
+            List of unique game dictionaries
+        """
+        all_games = []
+        seen_game_ids = set()
+
+        for i, team in enumerate(self.active_team_codes, 1):
+            print(f"Fetching schedule for {team} ({i}/{len(self.active_team_codes)})...", end="\r")
+            try:
+                schedule = self.get_team_schedule(team, season)
+
+                # Extract games from the schedule
+                if "games" in schedule:
+                    for game in schedule["games"]:
+                        game_id = game.get("id")
+                        # Avoid duplicates
+                        if game_id and game_id not in seen_game_ids:
+                            seen_game_ids.add(game_id)
+                            all_games.append(game)
+            except Exception as e:
+                print(f"\nError fetching schedule for {team}: {e}")
+                continue
+
+        print(f"\nFetched {len(all_games)} unique games from {len(self.active_team_codes)} teams")
+        return all_games
+
+    def scrape_all_games_to_dataframe(self, season: str = "now") -> pd.DataFrame:
+        """
+        Scrape all games and return as a DataFrame.
+
+        Args:
+            season: Season string (e.g., '20232024') or 'now' for current season
+
+        Returns:
+            DataFrame with game data, flattened for SQL compatibility
+        """
+        games = self.scrape_all_games_team_method(season)
+        if not games:
+            return pd.DataFrame()
+
+        df = pd.json_normalize(games, sep='_')
+
+        # Convert tvBroadcasts list to comma-separated string of networks
+        if 'tvBroadcasts' in df.columns:
+            df['tvBroadcasts'] = df['tvBroadcasts'].apply(
+                lambda x: ', '.join([b.get('network', '') for b in x]) if isinstance(x, list) else ''
+            )
+
+        return df
+
+    def get_todays_games(self, date: Optional[str] = None) -> List[Dict]:
+        """
+        Get all games scheduled for today (or a specific date).
+
+        Args:
+            date: Optional date string in 'YYYY-MM-DD' format. Defaults to today.
+
+        Returns:
+            List of game dictionaries for the specified date
+        """
+        if date is None:
+            date = datetime.now().strftime('%Y-%m-%d')
+
+        url = f"{self.web_api_url}/schedule/{date}"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        games = []
+        for game_week in data.get('gameWeek', []):
+            if game_week.get('date') == date:
+                for game in game_week.get('games', []):
+                    game['gameDate'] = game_week.get('date')  # Add date from parent
+                games.extend(game_week.get('games', []))
+                break
+
+        return games
+
+    def get_todays_teams(self, date: Optional[str] = None) -> List[str]:
+        """
+        Get list of team tricodes playing today (or on a specific date).
+
+        Args:
+            date: Optional date string in 'YYYY-MM-DD' format. Defaults to today.
+
+        Returns:
+            List of unique team tricodes playing on that date
+        """
+        games = self.get_todays_games(date)
+        teams = set()
+
+        for game in games:
+            away = game.get('awayTeam', {}).get('abbrev')
+            home = game.get('homeTeam', {}).get('abbrev')
+            if away:
+                teams.add(away)
+            if home:
+                teams.add(home)
+
+        return list(teams)
+
+    def get_todays_schedule(self, date: Optional[str] = None) -> pd.DataFrame:
+        """
+        Get a summary of today's games with start times and scores.
+
+        Args:
+            date: Optional date string in 'YYYY-MM-DD' format. Defaults to today.
+
+        Returns:
+            DataFrame with game info: teams, start time, venue, scores, game state
+        """
+        games = self.get_todays_games(date)
+        if not games:
+            return pd.DataFrame()
+
+        rows = []
+        for game in games:
+            away_team = game.get('awayTeam', {})
+            home_team = game.get('homeTeam', {})
+
+            rows.append({
+                'gameId': game.get('id'),
+                'startTimeUTC': game.get('startTimeUTC'),
+                'gameState': game.get('gameState'),
+                'awayTeam': away_team.get('abbrev'),
+                'awayScore': away_team.get('score'),
+                'homeTeam': home_team.get('abbrev'),
+                'homeScore': home_team.get('score'),
+                'venue': game.get('venue', {}).get('default', ''),
+                'tvBroadcasts': ', '.join([b.get('network', '') for b in game.get('tvBroadcasts', [])]),
+            })
+
+        return pd.DataFrame(rows)
+
+    def get_todays_games_dataframe(self, date: Optional[str] = None) -> pd.DataFrame:
+        """
+        Get today's games as a DataFrame in the same format as scrape_all_games_to_dataframe.
+        Compatible for SQL upsert operations.
+
+        Args:
+            date: Optional date string in 'YYYY-MM-DD' format. Defaults to today.
+
+        Returns:
+            DataFrame with game data, flattened for SQL compatibility
+        """
+        games = self.get_todays_games(date)
+        if not games:
+            return pd.DataFrame()
+
+        df = pd.json_normalize(games, sep='_')
+
+        # Convert tvBroadcasts list to comma-separated string of networks
+        if 'tvBroadcasts' in df.columns:
+            df['tvBroadcasts'] = df['tvBroadcasts'].apply(
+                lambda x: ', '.join([b.get('network', '') for b in x]) if isinstance(x, list) else ''
+            )
+
+        return df
+
+    async def scrape_todays_team_stats(self, date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+        """
+        Scrape current season stats only for teams playing today.
+
+        Args:
+            date: Optional date string in 'YYYY-MM-DD' format. Defaults to today.
+
+        Returns:
+            Dict with 'skaters', 'goalies', 'schedule' DataFrames
+        """
+        teams = self.get_todays_teams(date)
+        if not teams:
+            self.logger.info("No games scheduled for today")
+            return {'skaters': pd.DataFrame(), 'goalies': pd.DataFrame(), 'schedule': pd.DataFrame()}
+
+        self.logger.info(f"Teams playing today: {', '.join(teams)}")
+
+        # Get stats for just those teams
+        stats = await self._scrape_current_season_async(team_codes=teams)
+
+        # Add today's schedule
+        stats['schedule'] = self.get_todays_schedule(date)
+
+        return stats
+
 
 async def main():
     scraper = NHLScraper()
