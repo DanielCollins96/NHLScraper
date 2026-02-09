@@ -263,7 +263,6 @@ class NHLScraper:
 
         urls = [f"{self.web_api_url}/club-stats-season/{code}" for code in tricodes]
 
-        # Fetch all data asynchronously
         responses = await self._fetch_all_data(urls)
 
         all_data = []
@@ -684,8 +683,17 @@ class NHLScraper:
             self.logger.error(f"Error fetching {url}: {e}")
             return None
     
-    async def _fetch_all_data(self, urls: List[str], batch_size: int = 10) -> List[dict]:
-        """Fetch data from multiple URLs concurrently."""
+    async def _fetch_all_data(
+        self,
+        urls: List[str],
+        batch_size: int = 10,
+        delay_between_batches: float = 0.5,
+    ) -> List[dict]:
+        """Fetch data from multiple URLs concurrently.
+
+        Kept simple and delegates per-request retry/backoff to `_fetch_data`.
+        Returns a list with the responses (or None for failed requests) in the same order as `urls`.
+        """
         async with aiohttp.ClientSession() as session:
             tasks = [self._fetch_data(session, url) for url in urls]
             return await asyncio.gather(*tasks)
@@ -709,7 +717,7 @@ class NHLScraper:
         response.raise_for_status()
         return response.json()
 
-    def scrape_all_games_team_method(self, season: str = "now") -> List[Dict]:
+    def scrape_all_games_team_method(self, season: str = "now", delay: float = 0.7) -> List[Dict]:
         """
         Get all teams' schedules and combine them (with deduplication).
 
@@ -723,7 +731,7 @@ class NHLScraper:
         seen_game_ids = set()
 
         for i, team in enumerate(self.active_team_codes, 1):
-            print(f"Fetching schedule for {team} ({i}/{len(self.active_team_codes)})...", end="\r")
+            self.logger.info(f"Fetching schedule for {team} ({i}/{len(self.active_team_codes)})...")
             try:
                 schedule = self.get_team_schedule(team, season)
 
@@ -736,10 +744,16 @@ class NHLScraper:
                             seen_game_ids.add(game_id)
                             all_games.append(game)
             except Exception as e:
-                print(f"\nError fetching schedule for {team}: {e}")
+                self.logger.error(f"Error fetching schedule for {team}: {e}")
                 continue
+            finally:
+                # small delay between requests to avoid triggering rate limits
+                try:
+                    sleep(delay)
+                except Exception:
+                    pass
 
-        print(f"\nFetched {len(all_games)} unique games from {len(self.active_team_codes)} teams")
+        self.logger.info(f"Fetched {len(all_games)} unique games from {len(self.active_team_codes)} teams")
         return all_games
 
     def scrape_all_games_to_dataframe(self, season: str = "now") -> pd.DataFrame:
