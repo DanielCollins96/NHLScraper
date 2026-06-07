@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 import aiohttp
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import text
 
 class NHLScraper:
@@ -717,6 +718,105 @@ class NHLScraper:
         response.raise_for_status()
         return response.json()
 
+    async def get_gamecenter_staging_data(
+        self,
+        game_ids: List[int],
+        batch_size: int = 50,
+        delay_between_batches: float = 0.1,
+    ) -> pd.DataFrame:
+        """Fetch gamecenter play-by-play data and return raw rows for staging1.gamecenter."""
+        game_ids = [int(gid) for gid in dict.fromkeys(game_ids) if gid is not None]
+        total = len(game_ids)
+        rows = []
+        failed_game_ids = []
+        games_with_plays = 0
+
+        if not game_ids:
+            return pd.DataFrame()
+
+        timeout = aiohttp.ClientTimeout(total=60)
+        connector = aiohttp.TCPConnector(limit=batch_size)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            for start in range(0, total, batch_size):
+                batch = game_ids[start:start + batch_size]
+                batch_number = (start // batch_size) + 1
+                total_batches = (total + batch_size - 1) // batch_size
+                batch_started_at = datetime.now()
+
+                urls = [
+                    f"{self.web_api_url}/gamecenter/{game_id}/play-by-play"
+                    for game_id in batch
+                ]
+                responses = await asyncio.gather(
+                    *(self._fetch_data(session, url) for url in urls),
+                    return_exceptions=True,
+                )
+
+                batch_rows = 0
+                batch_successes = 0
+                batch_failures = []
+                for game_id, response in zip(batch, responses):
+                    if isinstance(response, Exception) or response is None:
+                        batch_failures.append(game_id)
+                        continue
+
+                    plays = response.get("plays", []) if isinstance(response, dict) else []
+                    if not plays:
+                        batch_successes += 1
+                        continue
+
+                    games_with_plays += 1
+                    batch_successes += 1
+                    for play in plays:
+                        if not isinstance(play, dict):
+                            continue
+                        event_id = play.get("eventId")
+                        if event_id is not None:
+                            rows.append({
+                                "game_id": response.get("id") or game_id,
+                                "event_id": event_id,
+                                "game_payload": response,
+                                "raw_play": play,
+                            })
+                            batch_rows += 1
+
+                failed_game_ids.extend(batch_failures)
+                elapsed = (datetime.now() - batch_started_at).total_seconds()
+                processed = min(start + len(batch), total)
+                self.logger.info(
+                    "Gamecenter batch %s/%s: processed %s/%s games, %s successes, %s failures, %s play rows in %.1fs",
+                    batch_number,
+                    total_batches,
+                    processed,
+                    total,
+                    batch_successes,
+                    len(batch_failures),
+                    batch_rows,
+                    elapsed,
+                )
+
+                if batch_failures:
+                    self.logger.warning(
+                        "Gamecenter batch %s failed game ids: %s",
+                        batch_number,
+                        batch_failures,
+                    )
+
+                if delay_between_batches and start + batch_size < total:
+                    await asyncio.sleep(delay_between_batches)
+
+        self.logger.info(
+            "Completed gamecenter fetch: %s games attempted, %s games with plays, %s failed games, %s total play rows",
+            total,
+            games_with_plays,
+            len(failed_game_ids),
+            len(rows),
+        )
+        if failed_game_ids:
+            self.logger.warning("Gamecenter failed game ids: %s", failed_game_ids)
+
+        return pd.DataFrame(rows)
+
     def scrape_all_games_team_method(self, season: str = "now", delay: float = 0.7) -> List[Dict]:
         """
         Get all teams' schedules and combine them (with deduplication).
@@ -756,12 +856,247 @@ class NHLScraper:
         self.logger.info(f"Fetched {len(all_games)} unique games from {len(self.active_team_codes)} teams")
         return all_games
 
-    def scrape_all_games_to_dataframe(self, season: str = "now") -> pd.DataFrame:
+    def _games_to_dataframe(self, games: List[Dict]) -> pd.DataFrame:
+        """Flatten NHL schedule/gamecenter game payloads into the games staging shape."""
+        if not games:
+            return pd.DataFrame()
+
+        df = pd.json_normalize(games, sep='_')
+
+        if 'tvBroadcasts' in df.columns:
+            df['tvBroadcasts'] = df['tvBroadcasts'].apply(
+                lambda broadcasts: ', '.join(
+                    broadcast.get('network', '')
+                    for broadcast in broadcasts
+                    if isinstance(broadcast, dict)
+                ) if isinstance(broadcasts, list) else ''
+            )
+
+        return df
+
+    @staticmethod
+    def _default_text(value: Any) -> Optional[str]:
+        if isinstance(value, dict):
+            return value.get("default")
+        return value
+
+    @staticmethod
+    def _full_name(player: Optional[Dict]) -> Optional[str]:
+        if not isinstance(player, dict):
+            return None
+        first = NHLScraper._default_text(player.get("firstName"))
+        last = NHLScraper._default_text(player.get("lastName"))
+        return " ".join(part for part in (first, last) if part) or None
+
+    def _game_summary_dataframes(self, landing_payloads: List[Dict]) -> Dict[str, pd.DataFrame]:
+        """Extract compact goal, penalty, and three-star rows from landing summary payloads."""
+        goal_rows = []
+        penalty_rows = []
+        star_rows = []
+
+        for payload in landing_payloads:
+            if not isinstance(payload, dict):
+                continue
+
+            game_id = payload.get("id")
+            season = payload.get("season")
+            game_type = payload.get("gameType")
+            game_date = payload.get("gameDate")
+            away_team = (payload.get("awayTeam") or {}).get("abbrev")
+            home_team = (payload.get("homeTeam") or {}).get("abbrev")
+            summary = payload.get("summary") or {}
+
+            for period in summary.get("scoring") or []:
+                period_descriptor = period.get("periodDescriptor") or {}
+                for goal in period.get("goals") or []:
+                    assists = goal.get("assists") or []
+                    assist1 = assists[0] if len(assists) > 0 else {}
+                    assist2 = assists[1] if len(assists) > 1 else {}
+                    goal_rows.append({
+                        "game_id": game_id,
+                        "event_id": goal.get("eventId"),
+                        "season": season,
+                        "game_type": game_type,
+                        "game_date": game_date,
+                        "away_team_abbrev": away_team,
+                        "home_team_abbrev": home_team,
+                        "period_number": period_descriptor.get("number"),
+                        "period_type": period_descriptor.get("periodType"),
+                        "time_in_period": goal.get("timeInPeriod"),
+                        "team_abbrev": self._default_text(goal.get("teamAbbrev")),
+                        "is_home": goal.get("isHome"),
+                        "strength": goal.get("strength"),
+                        "situation_code": goal.get("situationCode"),
+                        "scoring_player_id": goal.get("playerId"),
+                        "scoring_player_name": self._default_text(goal.get("name")),
+                        "assist1_player_id": assist1.get("playerId"),
+                        "assist1_player_name": self._default_text(assist1.get("name")),
+                        "assist2_player_id": assist2.get("playerId"),
+                        "assist2_player_name": self._default_text(assist2.get("name")),
+                        "away_score": goal.get("awayScore"),
+                        "home_score": goal.get("homeScore"),
+                    })
+
+            for period in summary.get("penalties") or []:
+                period_descriptor = period.get("periodDescriptor") or {}
+                for idx, penalty in enumerate(period.get("penalties") or [], 1):
+                    committed_by = penalty.get("committedByPlayer") or {}
+                    drawn_by = penalty.get("drawnBy") or {}
+                    penalty_rows.append({
+                        "game_id": game_id,
+                        "penalty_index": idx,
+                        "season": season,
+                        "game_type": game_type,
+                        "game_date": game_date,
+                        "away_team_abbrev": away_team,
+                        "home_team_abbrev": home_team,
+                        "period_number": period_descriptor.get("number"),
+                        "period_type": period_descriptor.get("periodType"),
+                        "time_in_period": penalty.get("timeInPeriod"),
+                        "team_abbrev": self._default_text(penalty.get("teamAbbrev")),
+                        "penalty_type": penalty.get("type"),
+                        "duration": penalty.get("duration"),
+                        "desc_key": penalty.get("descKey"),
+                        "committed_by_player_name": self._full_name(committed_by),
+                        "committed_by_sweater_number": committed_by.get("sweaterNumber"),
+                        "drawn_by_player_name": self._full_name(drawn_by),
+                        "drawn_by_sweater_number": drawn_by.get("sweaterNumber"),
+                        "served_by_name": self._default_text(penalty.get("servedBy")),
+                    })
+
+            for star in summary.get("threeStars") or []:
+                star_rows.append({
+                    "game_id": game_id,
+                    "star": star.get("star"),
+                    "season": season,
+                    "game_type": game_type,
+                    "game_date": game_date,
+                    "player_id": star.get("playerId"),
+                    "player_name": self._default_text(star.get("name")),
+                    "team_abbrev": star.get("teamAbbrev"),
+                    "sweater_number": star.get("sweaterNo"),
+                    "position": star.get("position"),
+                    "goals": star.get("goals"),
+                    "assists": star.get("assists"),
+                    "points": star.get("points"),
+                })
+
+        goal_columns = [
+            "game_id", "event_id", "season", "game_type", "game_date",
+            "away_team_abbrev", "home_team_abbrev", "period_number", "period_type",
+            "time_in_period", "team_abbrev", "is_home", "strength", "situation_code",
+            "scoring_player_id", "scoring_player_name", "assist1_player_id",
+            "assist1_player_name", "assist2_player_id", "assist2_player_name",
+            "away_score", "home_score",
+        ]
+        penalty_columns = [
+            "game_id", "penalty_index", "season", "game_type", "game_date",
+            "away_team_abbrev", "home_team_abbrev", "period_number", "period_type",
+            "time_in_period", "team_abbrev", "penalty_type", "duration", "desc_key",
+            "committed_by_player_name", "committed_by_sweater_number",
+            "drawn_by_player_name", "drawn_by_sweater_number", "served_by_name",
+        ]
+        star_columns = [
+            "game_id", "star", "season", "game_type", "game_date", "player_id",
+            "player_name", "team_abbrev", "sweater_number", "position", "goals",
+            "assists", "points",
+        ]
+
+        return {
+            "game_goals": pd.DataFrame(goal_rows, columns=goal_columns),
+            "game_penalties": pd.DataFrame(penalty_rows, columns=penalty_columns),
+            "game_three_stars": pd.DataFrame(star_rows, columns=star_columns),
+        }
+
+    async def _fetch_game_landing_payloads(
+        self,
+        game_ids: List[int],
+        batch_size: int = 100,
+        delay_between_batches: float = 0.1,
+    ) -> List[Dict]:
+        """Fetch /gamecenter/{game_id}/landing payloads for richer game-level columns."""
+        game_ids = [int(game_id) for game_id in dict.fromkeys(game_ids) if game_id is not None]
+        if not game_ids:
+            return []
+
+        payloads = []
+        timeout = aiohttp.ClientTimeout(total=60)
+        connector = aiohttp.TCPConnector(limit=batch_size)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            for start in range(0, len(game_ids), batch_size):
+                batch = game_ids[start:start + batch_size]
+                urls = [
+                    f"{self.web_api_url}/gamecenter/{game_id}/landing"
+                    for game_id in batch
+                ]
+                responses = await asyncio.gather(
+                    *(self._fetch_data(session, url) for url in urls),
+                    return_exceptions=True,
+                )
+
+                for game_id, response in zip(batch, responses):
+                    if isinstance(response, Exception) or response is None:
+                        self.logger.warning("Failed to fetch landing payload for game %s", game_id)
+                        continue
+                    payloads.append(response)
+
+                self.logger.info(
+                    "Fetched landing payload batch %s/%s (%s/%s games)",
+                    (start // batch_size) + 1,
+                    (len(game_ids) + batch_size - 1) // batch_size,
+                    min(start + len(batch), len(game_ids)),
+                    len(game_ids),
+                )
+
+                if delay_between_batches and start + batch_size < len(game_ids):
+                    await asyncio.sleep(delay_between_batches)
+
+        return payloads
+
+    def _fetch_game_landing_payloads_sync(
+        self,
+        game_ids: List[int],
+        batch_size: int = 100,
+        delay_between_batches: float = 0.1,
+    ) -> List[Dict]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(
+                self._fetch_game_landing_payloads(
+                    game_ids,
+                    batch_size=batch_size,
+                    delay_between_batches=delay_between_batches,
+                )
+            )
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                lambda: asyncio.run(
+                    self._fetch_game_landing_payloads(
+                        game_ids,
+                        batch_size=batch_size,
+                        delay_between_batches=delay_between_batches,
+                    )
+                )
+            )
+            return future.result()
+
+    def scrape_all_games_to_dataframe(
+        self,
+        season: str = "now",
+        enrich_from_landing: bool = True,
+        landing_batch_size: int = 100,
+        landing_delay_between_batches: float = 0.1,
+    ) -> pd.DataFrame:
         """
         Scrape all games and return as a DataFrame.
 
         Args:
             season: Season string (e.g., '20232024') or 'now' for current season
+            enrich_from_landing: If True, fetch /gamecenter/{game_id}/landing
+                for richer game-level fields such as shots, logos, venue location,
+                clock, and playoff/OT flags.
 
         Returns:
             DataFrame with game data, flattened for SQL compatibility
@@ -770,15 +1105,49 @@ class NHLScraper:
         if not games:
             return pd.DataFrame()
 
-        df = pd.json_normalize(games, sep='_')
-
-        # Convert tvBroadcasts list to comma-separated string of networks
-        if 'tvBroadcasts' in df.columns:
-            df['tvBroadcasts'] = df['tvBroadcasts'].apply(
-                lambda x: ', '.join([b.get('network', '') for b in x]) if isinstance(x, list) else ''
+        if enrich_from_landing:
+            game_ids = [game.get("id") for game in games if game.get("id") is not None]
+            landing_payloads = self._fetch_game_landing_payloads_sync(
+                game_ids,
+                batch_size=landing_batch_size,
+                delay_between_batches=landing_delay_between_batches,
             )
+            if landing_payloads:
+                self.logger.info(
+                    "Using %s landing payloads for games dataframe enrichment",
+                    len(landing_payloads),
+                )
+                return self._ensure_games_staging_columns(self._games_to_dataframe(landing_payloads))
 
-        return df
+        return self._ensure_games_staging_columns(self._games_to_dataframe(games))
+
+    def scrape_all_games_dataframes(
+        self,
+        season: str = "now",
+        landing_batch_size: int = 100,
+        landing_delay_between_batches: float = 0.1,
+    ) -> Dict[str, pd.DataFrame]:
+        """Scrape games plus compact landing summary tables using one landing fetch per game."""
+        games = self.scrape_all_games_team_method(season)
+        if not games:
+            return {
+                "games": pd.DataFrame(),
+                "game_goals": pd.DataFrame(),
+                "game_penalties": pd.DataFrame(),
+                "game_three_stars": pd.DataFrame(),
+            }
+
+        game_ids = [game.get("id") for game in games if game.get("id") is not None]
+        landing_payloads = self._fetch_game_landing_payloads_sync(
+            game_ids,
+            batch_size=landing_batch_size,
+            delay_between_batches=landing_delay_between_batches,
+        )
+
+        source_games = landing_payloads if landing_payloads else games
+        dataframes = self._game_summary_dataframes(landing_payloads)
+        dataframes["games"] = self._ensure_games_staging_columns(self._games_to_dataframe(source_games))
+        return dataframes
 
     def get_todays_games(self, date: Optional[str] = None) -> List[Dict]:
         """
@@ -807,6 +1176,256 @@ class NHLScraper:
                 break
 
         return games
+
+    def get_schedule_now_games(self) -> List[Dict]:
+        """
+        Get the current schedule day from /schedule/now.
+
+        The NHL API redirects /schedule/now to the current schedule date and returns
+        a gameWeek array. This method uses the first gameWeek entry as the current
+        schedule day and attaches that date to every returned game.
+        """
+        url = f"{self.web_api_url}/schedule/now"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        game_week = data.get("gameWeek", [])
+        if not game_week:
+            return []
+
+        current_day = game_week[0]
+        schedule_date = current_day.get("date")
+        games = current_day.get("games", [])
+        for game in games:
+            game["gameDate"] = game.get("gameDate") or schedule_date
+            game["scheduleDate"] = schedule_date
+
+        return games
+
+    def get_schedule_now_teams(self) -> List[str]:
+        """Get unique team tricodes from the current /schedule/now schedule day."""
+        teams = set()
+        for game in self.get_schedule_now_games():
+            away = game.get("awayTeam", {}).get("abbrev")
+            home = game.get("homeTeam", {}).get("abbrev")
+            if away:
+                teams.add(away)
+            if home:
+                teams.add(home)
+
+        return sorted(teams)
+
+    def get_schedule_now_games_dataframe(self) -> pd.DataFrame:
+        """Return /schedule/now games in the same staging shape used by games ETL."""
+        games = self.get_schedule_now_games()
+        if not games:
+            return pd.DataFrame()
+
+        df = self._games_to_dataframe(games)
+
+        expected_columns = [
+            "id",
+            "season",
+            "gameType",
+            "gameDate",
+            "scheduleDate",
+            "gameState",
+            "gameScheduleState",
+            "startTimeUTC",
+            "venueTimezone",
+            "easternUTCOffset",
+            "venueUTCOffset",
+            "neutralSite",
+            "venue_default",
+            "venueLocation_default",
+            "tvBroadcasts",
+            "limitedScoring",
+            "shootoutInUse",
+            "regPeriods",
+            "otInUse",
+            "tiesInUse",
+            "awayTeam_id",
+            "awayTeam_abbrev",
+            "awayTeam_commonName_default",
+            "awayTeam_placeName_default",
+            "awayTeam_score",
+            "awayTeam_sog",
+            "awayTeam_logo",
+            "awayTeam_darkLogo",
+            "homeTeam_id",
+            "homeTeam_abbrev",
+            "homeTeam_commonName_default",
+            "homeTeam_placeName_default",
+            "homeTeam_score",
+            "homeTeam_sog",
+            "homeTeam_logo",
+            "homeTeam_darkLogo",
+            "periodDescriptor_number",
+            "periodDescriptor_periodType",
+            "periodDescriptor_otPeriods",
+            "periodDescriptor_maxRegulationPeriods",
+            "gameOutcome_lastPeriodType",
+            "winningGoalie_playerId",
+            "winningGoalScorer_playerId",
+            "clock_timeRemaining",
+            "clock_secondsRemaining",
+            "clock_running",
+            "clock_inIntermission",
+            "gameCenterLink",
+        ]
+        for column in expected_columns:
+            if column not in df.columns:
+                df[column] = None
+
+        return df[expected_columns]
+
+    def _ensure_games_staging_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add nullable landing-enrichment columns expected by sync_games_from_staging."""
+        expected_columns = [
+            "id",
+            "season",
+            "gameType",
+            "gameDate",
+            "gameState",
+            "gameScheduleState",
+            "startTimeUTC",
+            "easternUTCOffset",
+            "venueUTCOffset",
+            "venueTimezone",
+            "neutralSite",
+            "venue_default",
+            "venueLocation_default",
+            "tvBroadcasts",
+            "limitedScoring",
+            "shootoutInUse",
+            "regPeriods",
+            "otInUse",
+            "tiesInUse",
+            "awayTeam_id",
+            "awayTeam_abbrev",
+            "awayTeam_commonName_default",
+            "awayTeam_placeName_default",
+            "awayTeam_score",
+            "awayTeam_sog",
+            "awayTeam_logo",
+            "awayTeam_darkLogo",
+            "homeTeam_id",
+            "homeTeam_abbrev",
+            "homeTeam_commonName_default",
+            "homeTeam_placeName_default",
+            "homeTeam_score",
+            "homeTeam_sog",
+            "homeTeam_logo",
+            "homeTeam_darkLogo",
+            "periodDescriptor_number",
+            "periodDescriptor_periodType",
+            "periodDescriptor_otPeriods",
+            "periodDescriptor_maxRegulationPeriods",
+            "gameOutcome_lastPeriodType",
+            "winningGoalie_playerId",
+            "winningGoalScorer_playerId",
+            "clock_timeRemaining",
+            "clock_secondsRemaining",
+            "clock_running",
+            "clock_inIntermission",
+            "gameCenterLink",
+        ]
+        for column in expected_columns:
+            if column not in df.columns:
+                df[column] = None
+
+        return df
+
+    def get_game_team_rosters(self, schedule_games: List[Dict], rosters_df: pd.DataFrame) -> pd.DataFrame:
+        """Expand team rosters into one row per game/team/player."""
+        expected_columns = [
+            "scheduleDate",
+            "gameId",
+            "teamSide",
+            "teamAbbreviation",
+            "opponentAbbreviation",
+            "positionGroup",
+            "playerId",
+            "headshot",
+            "firstName",
+            "lastName",
+            "fullName",
+            "sweaterNumber",
+            "positionCode",
+            "shootsCatches",
+            "heightInInches",
+            "weightInPounds",
+            "heightInCentimeters",
+            "weightInKilograms",
+            "birthDate",
+            "birthCity",
+            "birthCountry",
+            "birthStateProvince",
+        ]
+
+        if rosters_df is None or rosters_df.empty or not schedule_games:
+            return pd.DataFrame(columns=expected_columns)
+
+        rows = []
+        for game in schedule_games:
+            schedule_date = game.get("scheduleDate") or game.get("gameDate")
+            game_id = game.get("id")
+            away_abbrev = game.get("awayTeam", {}).get("abbrev")
+            home_abbrev = game.get("homeTeam", {}).get("abbrev")
+
+            for team_side, team_abbrev, opponent_abbrev in (
+                ("away", away_abbrev, home_abbrev),
+                ("home", home_abbrev, away_abbrev),
+            ):
+                if not team_abbrev:
+                    continue
+
+                team_roster = rosters_df[rosters_df["teamAbbreviation"] == team_abbrev]
+                for player in team_roster.to_dict(orient="records"):
+                    rows.append({
+                        "scheduleDate": schedule_date,
+                        "gameId": game_id,
+                        "teamSide": team_side,
+                        "teamAbbreviation": team_abbrev,
+                        "opponentAbbreviation": opponent_abbrev,
+                        **player,
+                    })
+
+        df = pd.DataFrame(rows)
+        for column in expected_columns:
+            if column not in df.columns:
+                df[column] = None
+
+        return df[expected_columns]
+
+    async def scrape_schedule_now_game_rosters(self) -> Dict[str, pd.DataFrame]:
+        """Fetch /schedule/now games and current rosters for participating teams."""
+        schedule_games = self.get_schedule_now_games()
+        games_df = self.get_schedule_now_games_dataframe()
+        teams = sorted({
+            team_abbrev
+            for game in schedule_games
+            for team_abbrev in (
+                game.get("awayTeam", {}).get("abbrev"),
+                game.get("homeTeam", {}).get("abbrev"),
+            )
+            if team_abbrev
+        })
+
+        if teams:
+            team_rosters = await self.scrape_all_rosters(team_codes=teams)
+            game_rosters = self.get_game_team_rosters(schedule_games, team_rosters)
+        else:
+            team_rosters = pd.DataFrame()
+            game_rosters = self.get_game_team_rosters([], team_rosters)
+
+        return {
+            "games": games_df,
+            "teams": teams,
+            "team_rosters": team_rosters,
+            "game_rosters": game_rosters,
+        }
 
     def get_todays_teams(self, date: Optional[str] = None) -> List[str]:
         """
@@ -887,7 +1506,7 @@ class NHLScraper:
                 lambda x: ', '.join([b.get('network', '') for b in x]) if isinstance(x, list) else ''
             )
 
-        return df
+        return self._ensure_games_staging_columns(df)
 
     async def scrape_todays_team_stats(self, date: Optional[str] = None) -> Dict[str, pd.DataFrame]:
         """
