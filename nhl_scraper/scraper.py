@@ -26,10 +26,10 @@ class NHLScraper:
         self.game_types = [2, 3]  # 2 for regular season, 3 for playoffs
 
     def get_current_season(self) -> str:
-        """Calculate the current NHL season string (October start date)"""
+        """Calculate the current NHL season string (September start date)."""
         current_date = datetime.now()
         current_year = current_date.year
-        if current_date.month >= 10:
+        if current_date.month >= 9:
             season = f"{current_year}{current_year + 1}"
         else:
             season = f"{current_year - 1}{current_year}"
