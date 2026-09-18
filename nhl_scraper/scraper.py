@@ -3,11 +3,14 @@ import pandas as pd
 from time import sleep
 from typing import List, Dict, Any, Tuple, Union, Optional
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import aiohttp
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import text
+
+NHL_SCHEDULE_TZ = ZoneInfo("America/New_York")
 
 class NHLScraper:
     def __init__(self):
@@ -401,6 +404,24 @@ class NHLScraper:
         combined_goalies_df = pd.concat(all_goalies, ignore_index=True) if all_goalies else pd.DataFrame()
 
         return combined_skaters_df, combined_goalies_df
+
+    SEASON_LOCALE_COLUMNS = (
+        "teamPlaceNameWithPreposition.cs",
+        "teamPlaceNameWithPreposition.es",
+        "teamPlaceNameWithPreposition.fi",
+        "teamPlaceNameWithPreposition.sk",
+        "teamPlaceNameWithPreposition.sv",
+    )
+
+    @staticmethod
+    def _ensure_dataframe_columns(df: pd.DataFrame, columns: Tuple[str, ...]) -> pd.DataFrame:
+        """Add nullable columns expected by season staging sync procedures."""
+        if df is None or df.empty:
+            return df
+        for column in columns:
+            if column not in df.columns:
+                df[column] = None
+        return df
     
     def scrape_player(self, player_id: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         url = f"{self.web_api_url}/player/{player_id}/landing"
@@ -484,13 +505,21 @@ class NHLScraper:
                         raise
                 if all_skater_seasons:
                     try:
-                        pd.concat(all_skater_seasons, ignore_index=True).to_sql('season_skater', conn, if_exists='replace', index=False, schema='staging1')
+                        skater_seasons_df = NHLScraper._ensure_dataframe_columns(
+                            pd.concat(all_skater_seasons, ignore_index=True),
+                            NHLScraper.SEASON_LOCALE_COLUMNS,
+                        )
+                        skater_seasons_df.to_sql('season_skater', conn, if_exists='replace', index=False, schema='staging1')
                     except Exception as e:
                         self.logger.error(f"Failed to insert into staging1.season_skater: {e}")
                         raise
                 if all_goalie_seasons:
                     try:
-                        pd.concat(all_goalie_seasons, ignore_index=True).to_sql('season_goalie', conn, if_exists='replace', index=False, schema='staging1')
+                        goalie_seasons_df = NHLScraper._ensure_dataframe_columns(
+                            pd.concat(all_goalie_seasons, ignore_index=True),
+                            NHLScraper.SEASON_LOCALE_COLUMNS,
+                        )
+                        goalie_seasons_df.to_sql('season_goalie', conn, if_exists='replace', index=False, schema='staging1')
                     except Exception as e:
                         self.logger.error(f"Failed to insert into staging1.season_goalie: {e}")
                         raise
@@ -1126,9 +1155,32 @@ class NHLScraper:
         season: str = "now",
         landing_batch_size: int = 100,
         landing_delay_between_batches: float = 0.1,
+        dates: Optional[List[str]] = None,
     ) -> Dict[str, pd.DataFrame]:
-        """Scrape games plus compact landing summary tables using one landing fetch per game."""
-        games = self.scrape_all_games_team_method(season)
+        """Scrape games plus compact landing summary tables using one landing fetch per game.
+
+        Args:
+            season: Season string (e.g., '20232024') or 'now' for current season.
+            dates: Optional list of 'YYYY-MM-DD' schedule dates. When provided, only
+                those days are scraped instead of every team schedule for the season.
+        """
+        if dates:
+            games = self.get_games_for_dates(dates)
+        else:
+            games = self.scrape_all_games_team_method(season)
+        return self._games_dataframes_from_games(
+            games,
+            landing_batch_size=landing_batch_size,
+            landing_delay_between_batches=landing_delay_between_batches,
+        )
+
+    def _games_dataframes_from_games(
+        self,
+        games: List[Dict],
+        landing_batch_size: int = 100,
+        landing_delay_between_batches: float = 0.1,
+    ) -> Dict[str, pd.DataFrame]:
+        """Fetch landing payloads for a game list and return games plus summary tables."""
         if not games:
             return {
                 "games": pd.DataFrame(),
@@ -1149,18 +1201,78 @@ class NHLScraper:
         dataframes["games"] = self._ensure_games_staging_columns(self._games_to_dataframe(source_games))
         return dataframes
 
+    def get_nhl_calendar_date(self, date: Optional[str] = None):
+        """Return an NHL schedule calendar date, using America/New_York when omitted."""
+        if date:
+            return datetime.strptime(date, "%Y-%m-%d").date()
+        return datetime.now(NHL_SCHEDULE_TZ).date()
+
+    def get_schedule_window_dates(
+        self,
+        days: int = 2,
+        end_date: Optional[str] = None,
+        lookahead_days: int = 0,
+    ) -> List[str]:
+        """Return NHL schedule dates around today (or end_date).
+
+        days=2 and lookahead_days=1 is tomorrow, today, and yesterday
+        in America/New_York.
+        """
+        if days < 1:
+            raise ValueError("days must be at least 1")
+        if lookahead_days < 0:
+            raise ValueError("lookahead_days must be at least 0")
+
+        end = self.get_nhl_calendar_date(end_date)
+        return [
+            (end - timedelta(days=offset)).strftime("%Y-%m-%d")
+            for offset in range(-lookahead_days, days)
+        ]
+
+    def get_games_for_dates(self, dates: Optional[List[str]] = None) -> List[Dict]:
+        """Get unique games for one or more NHL schedule dates."""
+        if not dates:
+            dates = [self.get_nhl_calendar_date().strftime("%Y-%m-%d")]
+
+        games = []
+        seen_game_ids = set()
+        for date in dates:
+            for game in self.get_todays_games(date):
+                game_id = game.get("id")
+                game["gameDate"] = game.get("gameDate") or date
+                game["scheduleDate"] = game.get("scheduleDate") or date
+                if game_id and game_id in seen_game_ids:
+                    continue
+                if game_id:
+                    seen_game_ids.add(game_id)
+                games.append(game)
+        return games
+
+    def get_teams_for_dates(self, dates: Optional[List[str]] = None) -> List[str]:
+        """Get unique team tricodes playing on one or more NHL schedule dates."""
+        teams = set()
+        for game in self.get_games_for_dates(dates):
+            away = game.get("awayTeam", {}).get("abbrev")
+            home = game.get("homeTeam", {}).get("abbrev")
+            if away:
+                teams.add(away)
+            if home:
+                teams.add(home)
+        return sorted(teams)
+
     def get_todays_games(self, date: Optional[str] = None) -> List[Dict]:
         """
         Get all games scheduled for today (or a specific date).
 
         Args:
-            date: Optional date string in 'YYYY-MM-DD' format. Defaults to today.
+            date: Optional date string in 'YYYY-MM-DD' format. Defaults to today
+                in America/New_York.
 
         Returns:
             List of game dictionaries for the specified date
         """
         if date is None:
-            date = datetime.now().strftime('%Y-%m-%d')
+            date = self.get_nhl_calendar_date().strftime('%Y-%m-%d')
 
         url = f"{self.web_api_url}/schedule/{date}"
         response = requests.get(url)
@@ -1423,6 +1535,52 @@ class NHLScraper:
         return {
             "games": games_df,
             "teams": teams,
+            "team_rosters": team_rosters,
+            "game_rosters": game_rosters,
+        }
+
+    async def scrape_recent_schedule_game_rosters(
+        self,
+        days: int = 2,
+        end_date: Optional[str] = None,
+        lookahead_days: int = 0,
+    ) -> Dict[str, pd.DataFrame]:
+        """Fetch games and current rosters for teams playing in a recent date window."""
+        dates = self.get_schedule_window_dates(
+            days=days,
+            end_date=end_date,
+            lookahead_days=lookahead_days,
+        )
+        schedule_games = self.get_games_for_dates(dates)
+        games_df = (
+            self._ensure_games_staging_columns(self._games_to_dataframe(schedule_games))
+            if schedule_games else pd.DataFrame()
+        )
+        teams = sorted({
+            team_abbrev
+            for game in schedule_games
+            for team_abbrev in (
+                game.get("awayTeam", {}).get("abbrev"),
+                game.get("homeTeam", {}).get("abbrev"),
+            )
+            if team_abbrev
+        })
+        known_teams = [team for team in teams if team in self.active_team_codes]
+        unknown_teams = [team for team in teams if team not in self.active_team_codes]
+        if unknown_teams:
+            self.logger.warning("Skipping unknown schedule team code(s): %s", unknown_teams)
+
+        if known_teams:
+            team_rosters = await self.scrape_all_rosters(team_codes=known_teams)
+            game_rosters = self.get_game_team_rosters(schedule_games, team_rosters)
+        else:
+            team_rosters = pd.DataFrame()
+            game_rosters = self.get_game_team_rosters([], team_rosters)
+
+        return {
+            "games": games_df,
+            "teams": known_teams,
+            "dates": dates,
             "team_rosters": team_rosters,
             "game_rosters": game_rosters,
         }
