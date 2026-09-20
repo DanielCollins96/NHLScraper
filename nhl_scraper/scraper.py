@@ -405,18 +405,115 @@ class NHLScraper:
 
         return combined_skaters_df, combined_goalies_df
 
+    # Columns read by insert_players_from_staging_with_logging().
+    # Landing payloads omit these for unnumbered camp/prospect players.
+    PLAYER_STAGING_COLUMNS = (
+        "playerId",
+        "isActive",
+        "currentTeamId",
+        "currentTeamAbbrev",
+        "fullTeamName.default",
+        "firstName.default",
+        "lastName.default",
+        "sweaterNumber",
+        "position",
+        "headshot",
+        "heroImage",
+        "heightInInches",
+        "heightInCentimeters",
+        "weightInPounds",
+        "weightInKilograms",
+        "birthDate",
+        "birthCity.default",
+        "birthStateProvince.default",
+        "birthCountry",
+        "shootsCatches",
+        "playerSlug",
+        "inTop100AllTime",
+        "inHHOF",
+        "draftDetails.year",
+        "draftDetails.teamAbbrev",
+        "draftDetails.round",
+        "draftDetails.pickInRound",
+        "draftDetails.overallPick",
+    )
+
     SEASON_LOCALE_COLUMNS = (
+        "teamCommonName.default",
+        "teamCommonName.cs",
+        "teamCommonName.de",
+        "teamCommonName.es",
+        "teamCommonName.fi",
+        "teamCommonName.fr",
+        "teamCommonName.sk",
+        "teamCommonName.sv",
+        "teamName.default",
+        "teamName.cs",
+        "teamName.de",
+        "teamName.fi",
+        "teamName.fr",
+        "teamName.sk",
+        "teamName.sv",
+        "teamPlaceNameWithPreposition.default",
         "teamPlaceNameWithPreposition.cs",
         "teamPlaceNameWithPreposition.es",
         "teamPlaceNameWithPreposition.fi",
+        "teamPlaceNameWithPreposition.fr",
         "teamPlaceNameWithPreposition.sk",
         "teamPlaceNameWithPreposition.sv",
     )
 
+    SEASON_SKATER_STAGING_COLUMNS = (
+        "playerId",
+        "assists",
+        "gameTypeId",
+        "gamesPlayed",
+        "goals",
+        "leagueAbbrev",
+        "pim",
+        "plusMinus",
+        "points",
+        "season",
+        "sequence",
+        "faceoffWinningPctg",
+        "shootingPctg",
+        "shots",
+        "powerPlayGoals",
+        "shorthandedGoals",
+        "gameWinningGoals",
+        "avgToi",
+        "otGoals",
+        "powerPlayPoints",
+        "shorthandedPoints",
+    ) + SEASON_LOCALE_COLUMNS
+
+    SEASON_GOALIE_STAGING_COLUMNS = (
+        "playerId",
+        "gameTypeId",
+        "gamesPlayed",
+        "goalsAgainst",
+        "goalsAgainstAvg",
+        "leagueAbbrev",
+        "losses",
+        "season",
+        "sequence",
+        "shutouts",
+        "ties",
+        "timeOnIce",
+        "wins",
+        "assists",
+        "gamesStarted",
+        "goals",
+        "pim",
+        "savePctg",
+        "shotsAgainst",
+        "otLosses",
+    ) + SEASON_LOCALE_COLUMNS
+
     @staticmethod
     def _ensure_dataframe_columns(df: pd.DataFrame, columns: Tuple[str, ...]) -> pd.DataFrame:
-        """Add nullable columns expected by season staging sync procedures."""
-        if df is None or df.empty:
+        """Add nullable columns expected by staging sync procedures."""
+        if df is None:
             return df
         for column in columns:
             if column not in df.columns:
@@ -444,6 +541,9 @@ class NHLScraper:
         existing_cols = [col for col in cols_to_drop if col in player_df.columns]
 
         player_df.drop(columns=existing_cols, inplace=True)
+        player_df = NHLScraper._ensure_dataframe_columns(
+            player_df, NHLScraper.PLAYER_STAGING_COLUMNS
+        )
         return player_df, seasons_df, awards_df
     
     async def scrape_all_players(self, player_ids: List[str], engine,batch_size: int = 100) -> None:
@@ -499,7 +599,11 @@ class NHLScraper:
             with engine.begin() as conn:
                 if all_players:
                     try:
-                        pd.concat(all_players, ignore_index=True).to_sql('player', conn, if_exists='replace', index=False, schema='staging1')
+                        player_staging_df = NHLScraper._ensure_dataframe_columns(
+                            pd.concat(all_players, ignore_index=True),
+                            NHLScraper.PLAYER_STAGING_COLUMNS,
+                        )
+                        player_staging_df.to_sql('player', conn, if_exists='replace', index=False, schema='staging1')
                     except Exception as e:
                         self.logger.error(f"Failed to insert into staging1.player: {e}")
                         raise
@@ -507,7 +611,7 @@ class NHLScraper:
                     try:
                         skater_seasons_df = NHLScraper._ensure_dataframe_columns(
                             pd.concat(all_skater_seasons, ignore_index=True),
-                            NHLScraper.SEASON_LOCALE_COLUMNS,
+                            NHLScraper.SEASON_SKATER_STAGING_COLUMNS,
                         )
                         skater_seasons_df.to_sql('season_skater', conn, if_exists='replace', index=False, schema='staging1')
                     except Exception as e:
@@ -517,7 +621,7 @@ class NHLScraper:
                     try:
                         goalie_seasons_df = NHLScraper._ensure_dataframe_columns(
                             pd.concat(all_goalie_seasons, ignore_index=True),
-                            NHLScraper.SEASON_LOCALE_COLUMNS,
+                            NHLScraper.SEASON_GOALIE_STAGING_COLUMNS,
                         )
                         goalie_seasons_df.to_sql('season_goalie', conn, if_exists='replace', index=False, schema='staging1')
                     except Exception as e:
