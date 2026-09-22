@@ -590,7 +590,8 @@ class NHLScraper:
                             player_df.drop(columns=existing_cols, inplace=True)
                             
                             all_players.append(player_df)
-                            all_awards.append(awards_df)
+                            if awards_df is not None and not awards_df.empty:
+                                all_awards.append(awards_df)
 
                 current_batch = i // batch_size + 1
                 total_batches = (len(urls) + batch_size - 1) // batch_size
@@ -629,7 +630,11 @@ class NHLScraper:
                         raise
                 if all_awards:
                     try:
-                        pd.concat(all_awards, ignore_index=True).to_sql('award', conn, if_exists='replace', index=False, schema='staging1')
+                        awards_staging_df = pd.concat(all_awards, ignore_index=True)
+                        if not awards_staging_df.empty and "playerId" in awards_staging_df.columns:
+                            awards_staging_df.to_sql('award', conn, if_exists='replace', index=False, schema='staging1')
+                        else:
+                            self.logger.info("No award rows to stage; leaving staging1.award unchanged")
                     except Exception as e:
                         self.logger.error(f"Failed to insert into staging1.award: {e}")
                         raise
