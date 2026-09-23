@@ -510,14 +510,84 @@ class NHLScraper:
         "otLosses",
     ) + SEASON_LOCALE_COLUMNS
 
+    # Hash helpers in nhl-skaters-goalies-table-insert expect these as DOUBLE PRECISION.
+    # Sparse call-up landing scrapes omit many of them, so pandas/to_sql would
+    # otherwise create TEXT (all-null object) or BIGINT (integer gamesPlayed).
+    SEASON_SKATER_NUMERIC_COLUMNS = (
+        "assists",
+        "gamesPlayed",
+        "goals",
+        "pim",
+        "plusMinus",
+        "points",
+        "faceoffWinningPctg",
+        "shootingPctg",
+        "shots",
+        "powerPlayGoals",
+        "shorthandedGoals",
+        "gameWinningGoals",
+        "otGoals",
+        "powerPlayPoints",
+        "shorthandedPoints",
+    )
+    SEASON_SKATER_TEXT_COLUMNS = (
+        "leagueAbbrev",
+        "avgToi",
+    ) + SEASON_LOCALE_COLUMNS
+
+    SEASON_GOALIE_NUMERIC_COLUMNS = (
+        "gamesPlayed",
+        "goalsAgainst",
+        "goalsAgainstAvg",
+        "losses",
+        "shutouts",
+        "ties",
+        "wins",
+        "assists",
+        "gamesStarted",
+        "goals",
+        "pim",
+        "savePctg",
+        "shotsAgainst",
+        "otLosses",
+    )
+    SEASON_GOALIE_TEXT_COLUMNS = (
+        "leagueAbbrev",
+        "timeOnIce",
+    ) + SEASON_LOCALE_COLUMNS
+
     @staticmethod
-    def _ensure_dataframe_columns(df: pd.DataFrame, columns: Tuple[str, ...]) -> pd.DataFrame:
-        """Add nullable columns expected by staging sync procedures."""
+    def _ensure_dataframe_columns(
+        df: pd.DataFrame,
+        columns: Tuple[str, ...],
+        numeric_columns: Tuple[str, ...] = (),
+        text_columns: Tuple[str, ...] = (),
+    ) -> pd.DataFrame:
+        """Add nullable columns expected by staging sync procedures.
+
+        When numeric/text column lists are provided, coerce those dtypes so
+        pandas to_sql creates DOUBLE PRECISION / TEXT instead of mixed object
+        types from sparse landing payloads.
+        """
         if df is None:
             return df
+        df = df.copy()
+        numeric_set = set(numeric_columns)
+        text_set = set(text_columns)
         for column in columns:
             if column not in df.columns:
-                df[column] = None
+                if column in numeric_set:
+                    df[column] = pd.Series(pd.NA, index=df.index, dtype="Float64")
+                elif column in text_set:
+                    df[column] = pd.Series(pd.NA, index=df.index, dtype="string")
+                else:
+                    df[column] = None
+        for column in numeric_columns:
+            if column in df.columns:
+                df[column] = pd.to_numeric(df[column], errors="coerce").astype("Float64")
+        for column in text_columns:
+            if column in df.columns:
+                df[column] = df[column].astype("string")
         return df
     
     def scrape_player(self, player_id: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -613,6 +683,8 @@ class NHLScraper:
                         skater_seasons_df = NHLScraper._ensure_dataframe_columns(
                             pd.concat(all_skater_seasons, ignore_index=True),
                             NHLScraper.SEASON_SKATER_STAGING_COLUMNS,
+                            numeric_columns=NHLScraper.SEASON_SKATER_NUMERIC_COLUMNS,
+                            text_columns=NHLScraper.SEASON_SKATER_TEXT_COLUMNS,
                         )
                         skater_seasons_df.to_sql('season_skater', conn, if_exists='replace', index=False, schema='staging1')
                     except Exception as e:
@@ -623,6 +695,8 @@ class NHLScraper:
                         goalie_seasons_df = NHLScraper._ensure_dataframe_columns(
                             pd.concat(all_goalie_seasons, ignore_index=True),
                             NHLScraper.SEASON_GOALIE_STAGING_COLUMNS,
+                            numeric_columns=NHLScraper.SEASON_GOALIE_NUMERIC_COLUMNS,
+                            text_columns=NHLScraper.SEASON_GOALIE_TEXT_COLUMNS,
                         )
                         goalie_seasons_df.to_sql('season_goalie', conn, if_exists='replace', index=False, schema='staging1')
                     except Exception as e:
