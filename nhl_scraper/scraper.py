@@ -556,6 +556,35 @@ class NHLScraper:
         "timeOnIce",
     ) + SEASON_LOCALE_COLUMNS
 
+    # Columns read by upsert_awards_from_staging_with_logging().
+    # Goalie award seasons from the NHL API use gaa/wins/savePctg and omit
+    # skater stats, so pandas to_sql(if_exists='replace') would rebuild
+    # staging1.award without goals/assists/etc.
+    AWARD_STAGING_COLUMNS = (
+        "playerId",
+        "trophy_default",
+        "trophy_fr",
+        "seasonId",
+        "gamesPlayed",
+        "goals",
+        "assists",
+        "points",
+        "plusMinus",
+        "pim",
+    )
+    AWARD_NUMERIC_COLUMNS = (
+        "gamesPlayed",
+        "goals",
+        "assists",
+        "points",
+        "plusMinus",
+        "pim",
+    )
+    AWARD_TEXT_COLUMNS = (
+        "trophy_default",
+        "trophy_fr",
+    )
+
     @staticmethod
     def _ensure_dataframe_columns(
         df: pd.DataFrame,
@@ -704,7 +733,12 @@ class NHLScraper:
                         raise
                 if all_awards:
                     try:
-                        awards_staging_df = pd.concat(all_awards, ignore_index=True)
+                        awards_staging_df = NHLScraper._ensure_dataframe_columns(
+                            pd.concat(all_awards, ignore_index=True),
+                            NHLScraper.AWARD_STAGING_COLUMNS,
+                            numeric_columns=NHLScraper.AWARD_NUMERIC_COLUMNS,
+                            text_columns=NHLScraper.AWARD_TEXT_COLUMNS,
+                        )
                         if not awards_staging_df.empty and "playerId" in awards_staging_df.columns:
                             awards_staging_df.to_sql('award', conn, if_exists='replace', index=False, schema='staging1')
                         else:
