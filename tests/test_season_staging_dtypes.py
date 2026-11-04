@@ -129,6 +129,53 @@ class TestSeasonStagingDtypes(unittest.TestCase):
         self.assertFalse(pd.api.types.is_numeric_dtype(prepared["avgToi"]))
         self.assertEqual(prepared["gamesPlayed"].iloc[0], 3.0)
 
+    def test_empty_landing_frames_keep_upsert_columns(self):
+        player = NHLScraper._ensure_dataframe_columns(
+            pd.DataFrame(), NHLScraper.PLAYER_STAGING_COLUMNS
+        )
+        self.assertEqual(len(player), 0)
+        for column in NHLScraper.PLAYER_STAGING_COLUMNS:
+            self.assertIn(column, player.columns)
+
+        skater = NHLScraper._ensure_dataframe_columns(
+            pd.DataFrame(),
+            NHLScraper.SEASON_SKATER_STAGING_COLUMNS,
+            numeric_columns=NHLScraper.SEASON_SKATER_NUMERIC_COLUMNS,
+            text_columns=NHLScraper.SEASON_SKATER_TEXT_COLUMNS,
+        )
+        self.assertEqual(len(skater), 0)
+        for column in NHLScraper.SEASON_SKATER_STAGING_COLUMNS:
+            self.assertIn(column, skater.columns)
+        self.assertTrue(pd.api.types.is_float_dtype(skater["gamesPlayed"]))
+        self.assertEqual(_sql_kind(skater["gamesPlayed"]), "double precision")
+
+        goalie = NHLScraper._ensure_dataframe_columns(
+            pd.DataFrame(),
+            NHLScraper.SEASON_GOALIE_STAGING_COLUMNS,
+            numeric_columns=NHLScraper.SEASON_GOALIE_NUMERIC_COLUMNS,
+            text_columns=NHLScraper.SEASON_GOALIE_TEXT_COLUMNS,
+        )
+        self.assertEqual(len(goalie), 0)
+        for column in NHLScraper.SEASON_GOALIE_STAGING_COLUMNS:
+            self.assertIn(column, goalie.columns)
+        self.assertEqual(_sql_kind(goalie["timeOnIce"]), "text")
+
+    def test_empty_games_scrape_keeps_staging_columns(self):
+        scraper = NHLScraper()
+        games = scraper._games_to_dataframe([])
+        self.assertEqual(len(games), 0)
+        self.assertIn("id", games.columns)
+        self.assertIn("awayTeam_sog", games.columns)
+        self.assertIn("winningGoalie_playerId", games.columns)
+
+        bundle = scraper._games_dataframes_from_games([])
+        self.assertEqual(len(bundle["games"]), 0)
+        self.assertIn("id", bundle["games"].columns)
+        self.assertIn("game_id", bundle["game_goals"].columns)
+        self.assertIn("game_id", bundle["game_penalties"].columns)
+        self.assertIn("game_id", bundle["game_three_stars"].columns)
+        self.assertEqual(scraper.last_roster_fetch_failures, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,10 @@ class NHLScraper:
         self.web_api_url = "https://api-web.nhle.com/v1"
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
+        # Team codes whose last scrape_all_rosters fetch failed (non-200 or
+        # exception). Reset at the start of each scrape; the return value stays
+        # a DataFrame so existing callers keep working.
+        self.last_roster_fetch_failures: List[str] = []
 
         self.active_team_codes = [
             'ANA', 'UTA', 'BOS', 'BUF', 'CGY', 'CAR', 'CHI', 'COL', 
@@ -697,40 +701,67 @@ class NHLScraper:
                 self.logger.info(f"Processed batch {current_batch}/{total_batches} ({len(batch_urls)} players)")
 
             with engine.begin() as conn:
-                if all_players:
-                    try:
-                        player_staging_df = NHLScraper._ensure_dataframe_columns(
-                            pd.concat(all_players, ignore_index=True),
-                            NHLScraper.PLAYER_STAGING_COLUMNS,
+                try:
+                    player_source = (
+                        pd.concat(all_players, ignore_index=True)
+                        if all_players else pd.DataFrame()
+                    )
+                    player_staging_df = NHLScraper._ensure_dataframe_columns(
+                        player_source,
+                        NHLScraper.PLAYER_STAGING_COLUMNS,
+                    )
+                    player_staging_df.to_sql(
+                        'player', conn, if_exists='replace', index=False, schema='staging1'
+                    )
+                    if player_staging_df.empty:
+                        self.logger.info(
+                            "No player rows this batch; staged empty player table with upsert columns"
                         )
-                        player_staging_df.to_sql('player', conn, if_exists='replace', index=False, schema='staging1')
-                    except Exception as e:
-                        self.logger.error(f"Failed to insert into staging1.player: {e}")
-                        raise
-                if all_skater_seasons:
-                    try:
-                        skater_seasons_df = NHLScraper._ensure_dataframe_columns(
-                            pd.concat(all_skater_seasons, ignore_index=True),
-                            NHLScraper.SEASON_SKATER_STAGING_COLUMNS,
-                            numeric_columns=NHLScraper.SEASON_SKATER_NUMERIC_COLUMNS,
-                            text_columns=NHLScraper.SEASON_SKATER_TEXT_COLUMNS,
+                except Exception as e:
+                    self.logger.error(f"Failed to insert into staging1.player: {e}")
+                    raise
+                try:
+                    skater_source = (
+                        pd.concat(all_skater_seasons, ignore_index=True)
+                        if all_skater_seasons else pd.DataFrame()
+                    )
+                    skater_seasons_df = NHLScraper._ensure_dataframe_columns(
+                        skater_source,
+                        NHLScraper.SEASON_SKATER_STAGING_COLUMNS,
+                        numeric_columns=NHLScraper.SEASON_SKATER_NUMERIC_COLUMNS,
+                        text_columns=NHLScraper.SEASON_SKATER_TEXT_COLUMNS,
+                    )
+                    skater_seasons_df.to_sql(
+                        'season_skater', conn, if_exists='replace', index=False, schema='staging1'
+                    )
+                    if skater_seasons_df.empty:
+                        self.logger.info(
+                            "No skater season rows this batch; staged empty season_skater table with upsert columns"
                         )
-                        skater_seasons_df.to_sql('season_skater', conn, if_exists='replace', index=False, schema='staging1')
-                    except Exception as e:
-                        self.logger.error(f"Failed to insert into staging1.season_skater: {e}")
-                        raise
-                if all_goalie_seasons:
-                    try:
-                        goalie_seasons_df = NHLScraper._ensure_dataframe_columns(
-                            pd.concat(all_goalie_seasons, ignore_index=True),
-                            NHLScraper.SEASON_GOALIE_STAGING_COLUMNS,
-                            numeric_columns=NHLScraper.SEASON_GOALIE_NUMERIC_COLUMNS,
-                            text_columns=NHLScraper.SEASON_GOALIE_TEXT_COLUMNS,
+                except Exception as e:
+                    self.logger.error(f"Failed to insert into staging1.season_skater: {e}")
+                    raise
+                try:
+                    goalie_source = (
+                        pd.concat(all_goalie_seasons, ignore_index=True)
+                        if all_goalie_seasons else pd.DataFrame()
+                    )
+                    goalie_seasons_df = NHLScraper._ensure_dataframe_columns(
+                        goalie_source,
+                        NHLScraper.SEASON_GOALIE_STAGING_COLUMNS,
+                        numeric_columns=NHLScraper.SEASON_GOALIE_NUMERIC_COLUMNS,
+                        text_columns=NHLScraper.SEASON_GOALIE_TEXT_COLUMNS,
+                    )
+                    goalie_seasons_df.to_sql(
+                        'season_goalie', conn, if_exists='replace', index=False, schema='staging1'
+                    )
+                    if goalie_seasons_df.empty:
+                        self.logger.info(
+                            "No goalie season rows this batch; staged empty season_goalie table with upsert columns"
                         )
-                        goalie_seasons_df.to_sql('season_goalie', conn, if_exists='replace', index=False, schema='staging1')
-                    except Exception as e:
-                        self.logger.error(f"Failed to insert into staging1.season_goalie: {e}")
-                        raise
+                except Exception as e:
+                    self.logger.error(f"Failed to insert into staging1.season_goalie: {e}")
+                    raise
                 try:
                     awards_source = (
                         pd.concat(all_awards, ignore_index=True)
@@ -857,6 +888,11 @@ class NHLScraper:
             - sweaterNumber: Jersey number
             - firstName: Player's first name
             - lastName: Player's last name
+
+        Teams that return a non-200 or raise are omitted from the frame and
+        recorded on ``self.last_roster_fetch_failures`` (and
+        ``DataFrame.attrs['failed_roster_teams']``) so callers can skip or pad
+        before a roster sync.
         """
         teams_to_scrape = team_codes if team_codes is not None else self.active_team_codes
         
@@ -865,8 +901,10 @@ class NHLScraper:
             invalid_teams = [team for team in teams_to_scrape if team not in self.active_team_codes]
             if invalid_teams:
                 raise ValueError(f"Invalid team code(s): {invalid_teams}")
-        
+
+        self.last_roster_fetch_failures = []
         all_players = []
+        failed_teams: List[str] = []
         
         async with aiohttp.ClientSession() as session:
             for team in teams_to_scrape:
@@ -876,7 +914,10 @@ class NHLScraper:
                     
                     async with session.get(url) as res:
                         if res.status != 200:
-                            self.logger.error(f"Failed to fetch roster for {team}: {res.status}")
+                            self.logger.warning(
+                                "Failed to fetch roster for %s: HTTP %s", team, res.status
+                            )
+                            failed_teams.append(team)
                             continue
                         
                         data = await res.json()
@@ -911,7 +952,8 @@ class NHLScraper:
                     await asyncio.sleep(delay)
                     
                 except Exception as e:
-                    self.logger.error(f"Error fetching roster for {team}: {e}")
+                    self.logger.warning("Error fetching roster for %s: %s", team, e)
+                    failed_teams.append(team)
                     continue
         
         # Create DataFrame and sort by team and full name
@@ -920,6 +962,15 @@ class NHLScraper:
             df['fullName'] = df['firstName'] + ' ' + df['lastName']
             df = df.sort_values(['teamAbbreviation', 'positionGroup', 'fullName'])
             df = df.reset_index(drop=True)
+
+        self.last_roster_fetch_failures = list(failed_teams)
+        df.attrs["failed_roster_teams"] = list(failed_teams)
+        if failed_teams:
+            self.logger.warning(
+                "Roster fetch failed for %s team(s): %s",
+                len(failed_teams),
+                ", ".join(failed_teams),
+            )
         
         return df
 
@@ -1111,7 +1162,7 @@ class NHLScraper:
     def _games_to_dataframe(self, games: List[Dict]) -> pd.DataFrame:
         """Flatten NHL schedule/gamecenter game payloads into the games staging shape."""
         if not games:
-            return pd.DataFrame()
+            return self._ensure_games_staging_columns(pd.DataFrame())
 
         df = pd.json_normalize(games, sep='_')
 
@@ -1355,7 +1406,7 @@ class NHLScraper:
         """
         games = self.scrape_all_games_team_method(season)
         if not games:
-            return pd.DataFrame()
+            return self._ensure_games_staging_columns(pd.DataFrame())
 
         if enrich_from_landing:
             game_ids = [game.get("id") for game in games if game.get("id") is not None]
@@ -1405,12 +1456,9 @@ class NHLScraper:
     ) -> Dict[str, pd.DataFrame]:
         """Fetch landing payloads for a game list and return games plus summary tables."""
         if not games:
-            return {
-                "games": pd.DataFrame(),
-                "game_goals": pd.DataFrame(),
-                "game_penalties": pd.DataFrame(),
-                "game_three_stars": pd.DataFrame(),
-            }
+            dataframes = self._game_summary_dataframes([])
+            dataframes["games"] = self._ensure_games_staging_columns(pd.DataFrame())
+            return dataframes
 
         game_ids = [game.get("id") for game in games if game.get("id") is not None]
         landing_payloads = self._fetch_game_landing_payloads_sync(
@@ -1554,9 +1602,6 @@ class NHLScraper:
     def get_schedule_now_games_dataframe(self) -> pd.DataFrame:
         """Return /schedule/now games in the same staging shape used by games ETL."""
         games = self.get_schedule_now_games()
-        if not games:
-            return pd.DataFrame()
-
         df = self._games_to_dataframe(games)
 
         expected_columns = [
@@ -1617,6 +1662,7 @@ class NHLScraper:
 
     def _ensure_games_staging_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add nullable landing-enrichment columns expected by sync_games_from_staging."""
+        df = pd.DataFrame() if df is None else df.copy()
         expected_columns = [
             "id",
             "season",
@@ -1775,10 +1821,7 @@ class NHLScraper:
             lookahead_days=lookahead_days,
         )
         schedule_games = self.get_games_for_dates(dates)
-        games_df = (
-            self._ensure_games_staging_columns(self._games_to_dataframe(schedule_games))
-            if schedule_games else pd.DataFrame()
-        )
+        games_df = self._ensure_games_staging_columns(self._games_to_dataframe(schedule_games))
         teams = sorted({
             team_abbrev
             for game in schedule_games
@@ -1877,7 +1920,7 @@ class NHLScraper:
         """
         games = self.get_todays_games(date)
         if not games:
-            return pd.DataFrame()
+            return self._ensure_games_staging_columns(pd.DataFrame())
 
         df = pd.json_normalize(games, sep='_')
 
