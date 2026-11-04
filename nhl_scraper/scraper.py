@@ -731,21 +731,27 @@ class NHLScraper:
                     except Exception as e:
                         self.logger.error(f"Failed to insert into staging1.season_goalie: {e}")
                         raise
-                if all_awards:
-                    try:
-                        awards_staging_df = NHLScraper._ensure_dataframe_columns(
-                            pd.concat(all_awards, ignore_index=True),
-                            NHLScraper.AWARD_STAGING_COLUMNS,
-                            numeric_columns=NHLScraper.AWARD_NUMERIC_COLUMNS,
-                            text_columns=NHLScraper.AWARD_TEXT_COLUMNS,
+                try:
+                    awards_source = (
+                        pd.concat(all_awards, ignore_index=True)
+                        if all_awards else pd.DataFrame()
+                    )
+                    awards_staging_df = NHLScraper._ensure_dataframe_columns(
+                        awards_source,
+                        NHLScraper.AWARD_STAGING_COLUMNS,
+                        numeric_columns=NHLScraper.AWARD_NUMERIC_COLUMNS,
+                        text_columns=NHLScraper.AWARD_TEXT_COLUMNS,
+                    )
+                    awards_staging_df.to_sql(
+                        'award', conn, if_exists='replace', index=False, schema='staging1'
+                    )
+                    if awards_staging_df.empty:
+                        self.logger.info(
+                            "No award rows this batch; staged empty award table with upsert columns"
                         )
-                        if not awards_staging_df.empty and "playerId" in awards_staging_df.columns:
-                            awards_staging_df.to_sql('award', conn, if_exists='replace', index=False, schema='staging1')
-                        else:
-                            self.logger.info("No award rows to stage; leaving staging1.award unchanged")
-                    except Exception as e:
-                        self.logger.error(f"Failed to insert into staging1.award: {e}")
-                        raise
+                except Exception as e:
+                    self.logger.error(f"Failed to insert into staging1.award: {e}")
+                    raise
                 # commit is automatic with engine.begin()
         except Exception as e:
             self.logger.error(f"Error in scrape_all_players: {e}")
